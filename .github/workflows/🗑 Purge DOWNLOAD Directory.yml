@@ -1,16 +1,16 @@
-name: 🗑️ Delete entire DOWNLOAD folder
+name: 🗑 Purge DOWNLOAD Directory
 
 on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: 'Type "DELETE" to confirm complete removal of the DOWNLOAD folder and all its contents.'
+        description: 'Type DELETE to confirm complete removal of the DOWNLOAD folder (case‑sensitive)'
         required: true
-        default: ''
         type: string
+        default: ''
 
 jobs:
-  delete-download:
+  purge-download:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -28,41 +28,43 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-      - name: Validate confirmation
+      - name: Validate confirmation input
         run: |
           if [ "${{ github.event.inputs.confirm }}" != "DELETE" ]; then
-            echo "❌ You must type DELETE exactly to confirm. Aborting."
+            echo "❌ Confirmation failed. You must type exactly DELETE (all caps)."
+            echo "   No changes were made to the repository."
             exit 1
           fi
-          echo "✅ Confirmation valid."
+          echo "✅ Confirmation accepted. Proceeding with deletion of DOWNLOAD/"
 
-      - name: Remove DOWNLOAD folder completely
+      - name: Purge DOWNLOAD directory
         run: |
           BRANCH="${GITHUB_REF_NAME}"
+          echo "🗑  Purging DOWNLOAD directory..."
 
-          echo "🗑️ Removing DOWNLOAD folder entirely..."
-
-          # حذف از ردیابی گیت (با چشم‌پوشی از خطا اگر فایلی track نباشد)
-          git rm -rf DOWNLOAD/ 2>/dev/null || true
-
-          # پاک‌سازی فیزیکی از روی دیسک
-          rm -rf DOWNLOAD 2>/dev/null || true
-
-          # Stage کردن حذف‌ها (git add -A تغییرات را ثبت می‌کند)
-          git add -A
-
-          # بررسی وجود تغییری برای commit
-          if git diff --cached --quiet; then
-            echo "ℹ️ No changes to commit (DOWNLOAD folder may already be absent)."
+          if [ ! -d "DOWNLOAD" ]; then
+            echo "ℹ️  DOWNLOAD directory does not exist. Nothing to do."
             exit 0
           fi
 
-          # Commit
-          git commit -m "🗑️ Remove entire DOWNLOAD folder [skip ci]"
+          # Remove from Git tracking (ignore errors for untracked files)
+          git rm -rf DOWNLOAD/ 2>/dev/null || true
 
-          echo "🚀 Pushing changes..."
+          # Physically delete the folder from disk
+          rm -rf DOWNLOAD 2>/dev/null || true
 
-          # Push با ریترای و rebase (همان روش اثبات‌شده)
+          # Stage all deletions (git add -A includes removals)
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "ℹ️  No changes to commit – DOWNLOAD may already be empty."
+            exit 0
+          fi
+
+          git commit -m "🗑 Purge DOWNLOAD directory [skip ci]"
+
+          echo "🚀 Pushing changes to origin/${BRANCH}..."
+
           RETRY=0
           MAX_RETRIES=5
           while [ $RETRY -lt $MAX_RETRIES ]; do
@@ -70,27 +72,29 @@ jobs:
 
             git fetch origin "$BRANCH" --quiet 2>/dev/null || true
             git rebase origin/"$BRANCH" 2>/dev/null || {
+              echo "⚠️  Rebase conflict – recovering..."
               git rebase --abort 2>/dev/null || true
               git reset --hard origin/"$BRANCH" 2>/dev/null || true
               git pull --rebase origin "$BRANCH" 2>/dev/null || true
-              # دوباره تغییرات را اعمال کن (در اینجا حذف DOWNLOAD)
+
+              # Re‑apply the deletion after reset
               git rm -rf DOWNLOAD/ 2>/dev/null || true
               rm -rf DOWNLOAD 2>/dev/null || true
               git add -A
-              git commit -m "🗑️ Remove entire DOWNLOAD folder [skip ci]" 2>/dev/null || true
+              git commit -m "🗑 Purge DOWNLOAD directory [skip ci]" 2>/dev/null || true
             }
 
             if timeout 60 git push origin HEAD:"$BRANCH" 2>&1; then
               echo ""
-              echo "=========================================="
-              echo "✅ DOWNLOAD folder deleted successfully!"
-              echo "=========================================="
+              echo "✅ DOWNLOAD directory permanently removed from repository."
               exit 0
             else
-              echo "Push failed, retry $RETRY/$MAX_RETRIES..."
+              echo "⏳ Push failed, attempt ${RETRY}/${MAX_RETRIES}. Retrying..."
               sleep $((2 + RANDOM % 5))
             fi
           done
 
-          echo "❌ Failed to push after $MAX_RETRIES attempts"
+          echo "❌ Push failed after ${MAX_RETRIES} attempts."
+          echo "   Possible reasons: network issues, branch protection, or concurrent pushes."
+          echo "   Please try again in a few minutes."
           exit 1
