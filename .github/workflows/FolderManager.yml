@@ -35,7 +35,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Display current folders (informational)
+      - name: Display current folders
         run: |
           echo "📁 Current folders inside DOWNLOAD/:"
           if [ -d DOWNLOAD ]; then
@@ -44,7 +44,7 @@ jobs:
             echo "(DOWNLOAD folder does not exist yet)"
           fi
 
-      - name: Validate inputs against existing folders
+      - name: Validate inputs
         env:
           SORT_OPTION: ${{ github.event.inputs.sort_option }}
           FOLDER_TO_DELETE: ${{ github.event.inputs.folder_to_delete }}
@@ -53,21 +53,17 @@ jobs:
           SORT_OPTION="$SORT_OPTION"
           FOLDER_TO_DELETE="$FOLDER_TO_DELETE"
           DELETE_ALL="$DELETE_ALL"
-
           ERROR_MSG=""
-          # Prevent sort + delete all
           if [ "$DELETE_ALL" = "true" ] && [ "$SORT_OPTION" != "no-sort" ]; then
-            ERROR_MSG="❌ Cannot sort folders while deleting all of them. Please set 'Sort Option' to 'no-sort' or uncheck 'Delete all folders'."
+            ERROR_MSG="❌ Cannot sort while deleting all folders. Set sort to 'no-sort' or uncheck delete all."
           fi
-          # Prevent specifying a specific folder while delete all is selected
           if [ "$DELETE_ALL" = "true" ] && [ "$FOLDER_TO_DELETE" != "none" ]; then
-            ERROR_MSG="❌ Cannot delete a specific folder while 'Delete all folders' is checked. Either uncheck 'Delete all folders' or set 'Folder to delete' to 'none'."
+            ERROR_MSG="❌ Cannot delete a specific folder when 'Delete all folders' is checked."
           fi
-          # If a specific folder is given, check its existence
           if [ "$FOLDER_TO_DELETE" != "none" ] && [ -d "DOWNLOAD" ]; then
             if [ ! -d "DOWNLOAD/$FOLDER_TO_DELETE" ]; then
               EXISTING=$(find DOWNLOAD -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tr '\n' ' ')
-              ERROR_MSG="❌ Folder '${FOLDER_TO_DELETE}' not found in DOWNLOAD/. Available folders: ${EXISTING:-none}"
+              ERROR_MSG="❌ Folder '${FOLDER_TO_DELETE}' not found. Available: ${EXISTING:-none}"
             fi
           fi
           if [ -n "$ERROR_MSG" ]; then
@@ -82,50 +78,53 @@ jobs:
           FOLDER_TO_DELETE: ${{ github.event.inputs.folder_to_delete }}
           DELETE_ALL: ${{ github.event.inputs.delete_all_folders }}
         run: |
-          set -e  # Exit immediately on any error
           SORT_OPTION="$SORT_OPTION"
           FOLDER_TO_DELETE="$FOLDER_TO_DELETE"
           DELETE_ALL="$DELETE_ALL"
           DOWNLOAD_DIR="DOWNLOAD"
 
-          # Ensure DOWNLOAD directory exists
           if [ ! -d "$DOWNLOAD_DIR" ]; then
             echo "📁 DOWNLOAD directory does not exist. Nothing to do."
             exit 0
           fi
 
-          # Helper to remove a single directory via git
-          remove_git_dir() {
-            local dir="$1"
-            echo "🗑️ Removing $dir"
-            # Force remove even if it contains untracked files
-            git rm -rf "$dir" || {
-              echo "❌ git rm failed for $dir"
-              return 1
-            }
+          # Helper: remove a path from Git index and disk, ignore if not tracked
+          safe_git_rm() {
+            local path="$1"
+            if [ -e "$path" ]; then
+              echo "🗑️ Removing $path"
+              # --ignore-unmatch prevents error if file not in index
+              # -r for directories, -f to allow removal even if untracked files present
+              git rm -rf --ignore-unmatch "$path" || echo "⚠️ Could not remove $path (maybe already removed)"
+            else
+              echo "ℹ️ Path $path does not exist, skipping."
+            fi
           }
 
-          # 1. Deletion of specific folder (if any)
+          # 1. Specific folder deletion
           if [ "$FOLDER_TO_DELETE" != "none" ]; then
-            TARGET="$DOWNLOAD_DIR/$FOLDER_TO_DELETE"
-            remove_git_dir "$TARGET"
+            safe_git_rm "$DOWNLOAD_DIR/$FOLDER_TO_DELETE"
           fi
 
-          # 2. Delete all folders (keep README files at root)
+          # 2. Delete all folders (keep root READMEs)
           if [ "$DELETE_ALL" = "true" ]; then
-            echo "🗑️ Deleting all folders inside $DOWNLOAD_DIR (root READMEs stay)..."
+            echo "🗑️ Deleting all folders inside $DOWNLOAD_DIR..."
             while IFS= read -r -d '' dir; do
-              remove_git_dir "$dir"
+              safe_git_rm "$dir"
             done < <(find "$DOWNLOAD_DIR" -mindepth 1 -maxdepth 1 -type d -print0)
 
-            # Remove stray files that are not the protected README
+            # Remove any stray files not being README
             while IFS= read -r -d '' file; do
+              # double check it's not a README we want to keep
+              case "$(basename "$file")" in
+                README.md|README_FA.md) continue ;;
+              esac
               echo "🗑️ Removing stray file: $file"
-              git rm -f "$file" || echo "⚠️ Could not remove $file"
+              git rm -f --ignore-unmatch "$file" || echo "⚠️ Could not remove $file"
             done < <(find "$DOWNLOAD_DIR" -maxdepth 1 -type f ! -name "README.md" ! -name "README_FA.md" -print0)
           fi
 
-          # 3. Sorting (unchanged)
+          # 3. Sorting
           if [ "$SORT_OPTION" != "no-sort" ]; then
             mapfile -t dirs < <(find "$DOWNLOAD_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
             if [ ${#dirs[@]} -eq 0 ]; then
@@ -140,18 +139,21 @@ jobs:
             fi
 
             echo "Sorting folders: ${dirs[*]}"
-            TEMP_PREFIX="temp_ren_$$_"
+            TEMP_PREFIX="sort_tmp_$$_"
+
+            # First pass: rename to temporary names
             for i in "${!dirs[@]}"; do
               orig="$DOWNLOAD_DIR/${dirs[$i]}"
-              tmp="$DOWNLOAD_DIR/${TEMP_PREFIX}_${i}"
+              tmp="$DOWNLOAD_DIR/${TEMP_PREFIX}${i}"
               if [ -d "$orig" ]; then
                 git mv "$orig" "$tmp" || { echo "❌ Failed to rename $orig to $tmp"; exit 1; }
               fi
             done
-            final_dirs=("${dirs[@]}")
-            for i in "${!final_dirs[@]}"; do
-              tmp="$DOWNLOAD_DIR/${TEMP_PREFIX}_${i}"
-              final="$DOWNLOAD_DIR/${final_dirs[$i]}"
+
+            # Second pass: rename to final sorted names
+            for i in "${!dirs[@]}"; do
+              tmp="$DOWNLOAD_DIR/${TEMP_PREFIX}${i}"
+              final="$DOWNLOAD_DIR/${dirs[$i]}"
               if [ -d "$tmp" ]; then
                 git mv "$tmp" "$final" || { echo "❌ Failed to rename to $final"; exit 1; }
               fi
@@ -159,14 +161,14 @@ jobs:
             echo "✅ Folders sorted successfully."
           fi
 
-          # 4. Commit & push (explicit remote & branch)
+          # 4. Commit & push
           if ! git diff --cached --quiet; then
-            echo "📝 Staging changes..."
+            echo "📝 Committing changes..."
             git status
             git commit -m "🔧 Folder management: sort/delete"
             echo "🚀 Pushing to origin/${GITHUB_REF_NAME}..."
             git push origin "${GITHUB_REF_NAME}" || {
-              echo "⚠️ Push failed, attempting rebase..."
+              echo "⚠️ Push failed, trying rebase..."
               git pull --rebase origin "${GITHUB_REF_NAME}"
               git push origin "${GITHUB_REF_NAME}"
             }
@@ -175,6 +177,6 @@ jobs:
             echo "✅ No changes to push."
           fi
 
-          # 5. Final verification
+          # 5. Final listing
           echo "📁 Folders after operation:"
           find "$DOWNLOAD_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort || echo "(none)"
