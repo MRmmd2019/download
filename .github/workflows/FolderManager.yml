@@ -1,33 +1,21 @@
-name: 📂 Folder Manager (Sort & Delete)
+---
+name: 🗑 3-Clean downloads folder
 
 on:
   workflow_dispatch:
     inputs:
-      sort_option:
-        description: 'Sort folders inside DOWNLOAD'
-        required: true
-        type: choice
-        default: 'no-sort'
-        options:
-          - 'no-sort'
-          - 'sort-az'
-          - 'sort-za'
-      folder_to_delete:
-        description: 'Exact folder name to delete (type "none" to skip)'
+      warning:
+        description: '⚠️ WARNING: This will DELETE ALL files inside downloads/ folder. Click "Run workflow" only if you are sure.'
         required: false
-        type: string
-        default: 'none'
-      delete_all_folders:
-        description: 'Delete ALL folders in DOWNLOAD (keeps README files)'
-        required: false
-        type: boolean
-        default: false
+        default: 'Read this warning before proceeding'
 
 jobs:
-  manage-folders:
+  delete:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -35,148 +23,119 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Display current folders
+      - name: Configure Git
         run: |
-          echo "📁 Current folders inside DOWNLOAD/:"
-          if [ -d DOWNLOAD ]; then
-            find DOWNLOAD -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort || echo "(none)"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+      - name: Remove downloads folder from Git and recreate with README
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+
+          echo "AVASAM (https://avasam.ir) - Cleaning downloads folder"
+          echo ""
+
+          # Check if downloads folder exists in git
+          if [ -d "downloads" ]; then
+            echo "Removing downloads folder from Git tracking..."
+
+            # Use git rm to properly remove tracked files
+            # This stages the deletion for commit
+            git rm -rf downloads/ 2>/dev/null || true
+
+            # Also remove any untracked files
+            rm -rf downloads 2>/dev/null || true
+
+            echo "Downloads folder removed from Git"
           else
-            echo "(DOWNLOAD folder does not exist yet)"
+            echo "Downloads folder doesn't exist, creating new one..."
           fi
 
-      - name: Validate inputs
-        env:
-          SORT_OPTION: ${{ github.event.inputs.sort_option }}
-          FOLDER_TO_DELETE: ${{ github.event.inputs.folder_to_delete }}
-          DELETE_ALL: ${{ github.event.inputs.delete_all_folders }}
-        run: |
-          SORT_OPTION="$SORT_OPTION"
-          FOLDER_TO_DELETE="$FOLDER_TO_DELETE"
-          DELETE_ALL="$DELETE_ALL"
-          ERROR_MSG=""
-          if [ "$DELETE_ALL" = "true" ] && [ "$SORT_OPTION" != "no-sort" ]; then
-            ERROR_MSG="❌ Cannot sort while deleting all folders. Set sort to 'no-sort' or uncheck delete all."
-          fi
-          if [ "$DELETE_ALL" = "true" ] && [ "$FOLDER_TO_DELETE" != "none" ]; then
-            ERROR_MSG="❌ Cannot delete a specific folder when 'Delete all folders' is checked."
-          fi
-          if [ "$FOLDER_TO_DELETE" != "none" ] && [ -d "DOWNLOAD" ]; then
-            if [ ! -d "DOWNLOAD/$FOLDER_TO_DELETE" ]; then
-              EXISTING=$(find DOWNLOAD -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tr '\n' ' ')
-              ERROR_MSG="❌ Folder '${FOLDER_TO_DELETE}' not found. Available: ${EXISTING:-none}"
-            fi
-          fi
-          if [ -n "$ERROR_MSG" ]; then
-            echo "$ERROR_MSG"
-            exit 1
-          fi
-          echo "✅ Inputs valid."
+          # Create fresh downloads folder
+          mkdir -p downloads
 
-      - name: Perform folder operations
-        env:
-          SORT_OPTION: ${{ github.event.inputs.sort_option }}
-          FOLDER_TO_DELETE: ${{ github.event.inputs.folder_to_delete }}
-          DELETE_ALL: ${{ github.event.inputs.delete_all_folders }}
-        run: |
-          # غیرفعال کردن خروج خودکار برای جلوگیری از 128 ناگهانی
-          set +e
+          # IMPORTANT: Git doesn't track empty folders!
+          # We MUST add a file inside for Git to track the folder
+          {
+            echo "# Downloads"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## NO FILE DOWNLOADED YET!"
+            echo ""
+            echo "Use the download workflows to add files here."
+            echo ""
+            echo "---"
+            echo ""
+            echo "*This tool created by [avasam.ir](https://avasam.ir)*"
+          } > downloads/README.md
 
-          SORT_OPTION="$SORT_OPTION"
-          FOLDER_TO_DELETE="$FOLDER_TO_DELETE"
-          DELETE_ALL="$DELETE_ALL"
-          DOWNLOAD_DIR="DOWNLOAD"
+          echo "Created downloads/README.md"
 
-          if [ ! -d "$DOWNLOAD_DIR" ]; then
-            echo "📁 DOWNLOAD directory does not exist. Nothing to do."
+          # Stage the new README file
+          git add downloads/README.md
+
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo ""
+            echo "No changes detected - downloads folder is already clean"
             exit 0
           fi
 
-          # ۱. حذف پوشه خاص (با rm -rf معمولی، سپس add)
-          if [ "$FOLDER_TO_DELETE" != "none" ]; then
-            TARGET="$DOWNLOAD_DIR/$FOLDER_TO_DELETE"
-            if [ -d "$TARGET" ]; then
-              echo "🗑️ Removing $TARGET"
-              rm -rf "$TARGET"
-              echo "✅ Removed."
-            else
-              echo "⚠️ Folder '$FOLDER_TO_DELETE' not found, skipping."
-            fi
-          fi
+          # Commit the changes
+          git commit -m "[AVASAM] Clean downloads folder [skip ci]"
 
-          # ۲. حذف همه پوشه‌ها (به جز READMEها)
-          if [ "$DELETE_ALL" = "true" ]; then
-            echo "🗑️ Deleting all folders inside $DOWNLOAD_DIR..."
-            # حذف همه دایرکتوری‌های سطح اول
-            find "$DOWNLOAD_DIR" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} + 2>/dev/null || true
-            # حذف فایل‌های اضافی (غیر از README)
-            find "$DOWNLOAD_DIR" -maxdepth 1 -type f ! -name "README.md" ! -name "README_FA.md" -delete 2>/dev/null || true
-            echo "✅ All folders deleted."
-          fi
+          echo ""
+          echo "Pushing changes..."
 
-          # ۳. مرتب‌سازی (در صورت نیاز)
-          if [ "$SORT_OPTION" != "no-sort" ]; then
-            # لیست پوشه‌های باقی‌مانده
-            mapfile -t dirs < <(find "$DOWNLOAD_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
-            if [ ${#dirs[@]} -eq 0 ]; then
-              echo "📁 No folders to sort."
-            else
-              if [ "$SORT_OPTION" = "sort-za" ]; then
-                mapfile -t dirs < <(printf '%s\n' "${dirs[@]}" | sort -r)
-              else
-                mapfile -t dirs < <(printf '%s\n' "${dirs[@]}" | sort)
-              fi
+          # Push with retries
+          RETRY=0
+          MAX_RETRIES=5
+          while [ $RETRY -lt $MAX_RETRIES ]; do
+            RETRY=$((RETRY + 1))
 
-              echo "Sorting folders: ${dirs[*]}"
-              TEMP_PREFIX="sort_tmp_$$_"
+            # Fetch and rebase to avoid conflicts
+            git fetch origin "$BRANCH" --quiet 2>/dev/null || true
+            git rebase origin/"$BRANCH" 2>/dev/null || {
+              # If rebase fails, reset and try again
+              git rebase --abort 2>/dev/null || true
+              git reset --hard HEAD~1 2>/dev/null || true
+              git pull --rebase origin "$BRANCH" 2>/dev/null || true
 
-              # مرحله اول: تغییر نام به نام موقت
-              for i in "${!dirs[@]}"; do
-                orig="$DOWNLOAD_DIR/${dirs[$i]}"
-                tmp="$DOWNLOAD_DIR/${TEMP_PREFIX}${i}"
-                if [ -d "$orig" ]; then
-                  git mv "$orig" "$tmp" 2>/dev/null
-                  if [ $? -ne 0 ]; then
-                    echo "❌ git mv failed for $orig -> $tmp. Trying manual move + git add..."
-                    mv "$orig" "$tmp"
-                  fi
-                fi
-              done
-
-              # مرحله دوم: تغییر نام به نام نهایی مرتب
-              for i in "${!dirs[@]}"; do
-                tmp="$DOWNLOAD_DIR/${TEMP_PREFIX}${i}"
-                final="$DOWNLOAD_DIR/${dirs[$i]}"
-                if [ -d "$tmp" ]; then
-                  git mv "$tmp" "$final" 2>/dev/null
-                  if [ $? -ne 0 ]; then
-                    echo "❌ git mv failed for $tmp -> $final. Trying manual move + git add..."
-                    mv "$tmp" "$final"
-                  fi
-                fi
-              done
-              echo "✅ Folders sorted."
-            fi
-          fi
-
-          # ۴. Stage تمام تغییرات (حذف، اضافه، تغییر نام) در پوشه DOWNLOAD
-          echo "📝 Staging changes in $DOWNLOAD_DIR..."
-          git add -A "$DOWNLOAD_DIR"
-
-          # ۵. بررسی وجود تغییرات و commit/push
-          if ! git diff --cached --quiet; then
-            echo "📦 Committing..."
-            git commit -m "🔧 Folder management: sort/delete" || echo "⚠️ Commit had non-zero exit, but continuing."
-            echo "🚀 Pushing to origin/${GITHUB_REF_NAME}..."
-            git push origin "${GITHUB_REF_NAME}" || {
-              echo "⚠️ Push failed, trying rebase..."
-              git pull --rebase origin "${GITHUB_REF_NAME}"
-              git push origin "${GITHUB_REF_NAME}"
+              # Recreate our changes
+              mkdir -p downloads
+              git rm -rf downloads/ 2>/dev/null || true
+              rm -rf downloads 2>/dev/null || true
+              mkdir -p downloads
+              {
+                echo "# Downloads"
+                echo ""
+                echo "---"
+                echo ""
+                echo "## NO FILE DOWNLOADED YET!"
+                echo ""
+                echo "Use the download workflows to add files here."
+                echo ""
+                echo "---"
+                echo ""
+                echo "*This tool created by [avasam.ir](https://avasam.ir)*"
+              } > downloads/README.md
+              git add -A downloads/
+              git commit -m "[AVASAM] Clean downloads folder [skip ci]" 2>/dev/null || true
             }
-            echo "🎉 Changes pushed successfully."
-          else
-            echo "✅ No changes to push."
-          fi
 
-          # ۶. نمایش وضعیت نهایی
-          echo "📁 Folders after operation:"
-          find "$DOWNLOAD_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort || echo "(none)"
+            if timeout 60 git push origin HEAD:"$BRANCH" 2>&1; then
+              echo ""
+              echo "=========================================="
+              echo "✅ Downloads folder cleared successfully!"
+              echo "AVASAM (https://avasam.ir)"
+              echo "=========================================="
+              exit 0
+            else
+              echo "Push failed, retry $RETRY/$MAX_RETRIES..."
+              sleep $((2 + RANDOM % 5))
+            fi
+          done
+
+          echo "❌ Failed to push after $MAX_RETRIES attempts"
+          exit 1
