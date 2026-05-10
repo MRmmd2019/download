@@ -8,6 +8,26 @@ on:
         description: 'Space-separated list of URLs to download'
         required: true
         type: string
+      urls_mirror1:
+        description: 'Space-separated list of mirror URLs (fallback 1)'
+        required: false
+        default: ''
+        type: string
+      urls_mirror2:
+        description: 'Space-separated list of mirror URLs (fallback 2)'
+        required: false
+        default: ''
+        type: string
+      urls_mirror3:
+        description: 'Space-separated list of mirror URLs (fallback 3)'
+        required: false
+        default: ''
+        type: string
+      urls_mirror4:
+        description: 'Space-separated list of mirror URLs (fallback 4)'
+        required: false
+        default: ''
+        type: string
       mode:
         description: 'Download mode'
         required: false
@@ -102,6 +122,10 @@ jobs:
         env:
           MODE: ${{ github.event.inputs.mode }}
           URLS: ${{ github.event.inputs.urls }}
+          URLS_MIRROR1: ${{ github.event.inputs.urls_mirror1 }}
+          URLS_MIRROR2: ${{ github.event.inputs.urls_mirror2 }}
+          URLS_MIRROR3: ${{ github.event.inputs.urls_mirror3 }}
+          URLS_MIRROR4: ${{ github.event.inputs.urls_mirror4 }}
           ZIP_PASSWORD: ${{ github.event.inputs.password }}
           SPLIT_PARTS: ${{ github.event.inputs.split_parts }}
           MAX_PART_SIZE_MB: ${{ github.event.inputs.max_part_size_mb }}
@@ -117,6 +141,10 @@ jobs:
           # ── دریافت مقادیر از env ──
           MODE="${MODE}"
           URLS="${URLS}"
+          URLS_MIRROR1="${URLS_MIRROR1}"
+          URLS_MIRROR2="${URLS_MIRROR2}"
+          URLS_MIRROR3="${URLS_MIRROR3}"
+          URLS_MIRROR4="${URLS_MIRROR4}"
           ZIP_PASSWORD="${ZIP_PASSWORD}"
           SPLIT_PARTS="${SPLIT_PARTS}"
           MAX_PART_SIZE_MB="${MAX_PART_SIZE_MB}"
@@ -191,7 +219,7 @@ jobs:
             "Connection: keep-alive"
             "DNT: 1"
             "Upgrade-Insecure-Requests: 1"
-            "Referer:https/www.google.com/"
+            "Referer: https://www.google.com/"
           )
 
           # Helper functions
@@ -357,18 +385,65 @@ jobs:
               return 0
             else
               rm -f "tmp_downloads/$FILENAME"
-              create_error_file "$FILENAME" "Download failed after all methods. Last error: $ERROR_LOG" "$URL"
               return 1
             fi
           }
 
+          # New wrapper: try a list of URLs sequentially, rename to TARGET_NAME on success
+          download_with_fallbacks() {
+            local TARGET_NAME="$1"
+            shift
+            local CANDIDATES=("$@")
+            local SUCCESS=false
+
+            for cand_url in "${CANDIDATES[@]}"; do
+              [ -z "$cand_url" ] && continue
+              local cand_name=$(basename "$cand_url" | sed 's/%20/ /g; s/%2F/-/g; s/[?#].*//' | sed 's/[<>:"|?*]/_/g')
+              echo "Trying mirror: $cand_url (as $cand_name)"
+              if download_file "$cand_url" "$cand_name"; then
+                # Move to target name if different
+                if [ "$cand_name" != "$TARGET_NAME" ]; then
+                  mv "tmp_downloads/$cand_name" "tmp_downloads/$TARGET_NAME" 2>/dev/null || true
+                fi
+                SUCCESS=true
+                break
+              fi
+            done
+
+            if [ "$SUCCESS" = false ]; then
+              create_error_file "$TARGET_NAME" "All download URLs failed for $TARGET_NAME" "${CANDIDATES[0]}"
+              return 1
+            fi
+            echo "Successfully downloaded: $TARGET_NAME"
+            return 0
+          }
+
+          # Build arrays of URLs
+          IFS=' ' read -r -a PRIMARY_URLS <<< "$URLS"
+          IFS=' ' read -r -a MIRROR1_URLS <<< "$URLS_MIRROR1"
+          IFS=' ' read -r -a MIRROR2_URLS <<< "$URLS_MIRROR2"
+          IFS=' ' read -r -a MIRROR3_URLS <<< "$URLS_MIRROR3"
+          IFS=' ' read -r -a MIRROR4_URLS <<< "$URLS_MIRROR4"
+
           set -m
           pids=()
           download_counter=0
-          for URL in $URLS; do
-            FILENAME=$(basename "$URL" | sed 's/%20/ /g; s/%2F/-/g; s/[?#].*//' | sed 's/[<>:"|?*]/_/g')
-            echo "Queue download: $URL -> $FILENAME"
 
+          for ((idx=0; idx<${#PRIMARY_URLS[@]}; idx++)); do
+            PRIMARY_URL="${PRIMARY_URLS[$idx]}"
+            FILENAME=$(basename "$PRIMARY_URL" | sed 's/%20/ /g; s/%2F/-/g; s/[?#].*//' | sed 's/[<>:"|?*]/_/g')
+            echo "Queue download: $PRIMARY_URL -> $FILENAME"
+
+            # Build fallback list
+            CANDIDATES=("$PRIMARY_URL")
+            for mirror in MIRROR1_URLS MIRROR2_URLS MIRROR3_URLS MIRROR4_URLS; do
+              eval "MIRROR_ARRAY=(\"\${${mirror}[@]}\")"
+              if [ $idx -lt ${#MIRROR_ARRAY[@]} ] && [ -n "${MIRROR_ARRAY[$idx]}" ]; then
+                CANDIDATES+=("${MIRROR_ARRAY[$idx]}")
+              fi
+            done
+
+            # Concurrency control
             while [ ${#pids[@]} -ge $MAX_PARALLEL ]; do
               wait -n 2>/dev/null || true
               new_pids=()
@@ -380,7 +455,7 @@ jobs:
               pids=("${new_pids[@]}")
             done
 
-            download_file "$URL" "$FILENAME" &
+            download_with_fallbacks "$FILENAME" "${CANDIDATES[@]}" &
             pids+=($!)
             download_counter=$((download_counter+1))
           done
@@ -401,6 +476,7 @@ jobs:
             local CHECKSUM DEST STORED_SIZE STORED_SIZE_MB TOTAL_SIZE_MB PARTS_COUNT ARCHIVE_SIZE_MB
             local DOWNLOAD_LINKS_MD FOLDER_ENCODED PART_NAME PART_ENCODED
             local SPLIT_SIZE_MB ARCHIVE_BASE PARTS TOTAL_ARCHIVE_SIZE
+            local HAS_MERGED=false MERGED_FILE MERGED_SIZE MERGED_SIZE_MB MERGED_LINK MERGED_INFO
 
             SIZE=$(stat -c%s "$FILE")
             BASENAME=$(basename "$FILE")
@@ -482,6 +558,28 @@ jobs:
               done
               ARCHIVE_SIZE_MB=$(echo "scale=2; $TOTAL_ARCHIVE_SIZE / 1048576" | bc)
 
+              # Try to create a merged archive if split and under 95 MB
+              if [ "$SPLIT_SIZE_MB" -gt 0 ] && [ ${#PARTS[@]} -gt 1 ]; then
+                MERGE_DIR="$BACKUP_DIR/$FOLDER_NAME"
+                FIRST_PART="${PARTS[0]}"
+                if [ -f "$FIRST_PART" ]; then
+                  echo "Attempting to create merged archive..."
+                  (cd "$MERGE_DIR" && zip -F "$(basename "$FIRST_PART")" --out "${FOLDER_NAME}_merged.zip" >/dev/null 2>&1)
+                  if [ -f "$MERGE_DIR/${FOLDER_NAME}_merged.zip" ]; then
+                    MERGED_FILE="${FOLDER_NAME}_merged.zip"
+                    MERGED_SIZE=$(stat -c%s "$MERGE_DIR/$MERGED_FILE")
+                    if [ "$MERGED_SIZE" -le 95000000 ]; then
+                      MERGED_SIZE_MB=$(echo "scale=2; $MERGED_SIZE / 1048576" | bc)
+                      HAS_MERGED=true
+                      echo "Merged archive created: $MERGED_FILE ($MERGED_SIZE_MB MB)"
+                    else
+                      echo "Merged file exceeds 95 MB, not publishing"
+                      rm -f "$MERGE_DIR/$MERGED_FILE"
+                    fi
+                  fi
+                fi
+              fi
+
               FOLDER_ENCODED=$(urlencode "$FOLDER_NAME")
               DOWNLOAD_LINKS_MD=""
               COUNT=0
@@ -492,8 +590,16 @@ jobs:
                 DOWNLOAD_LINKS_MD+="| $COUNT | \`$PART_NAME\` | [Download](https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/DOWNLOAD/${FOLDER_ENCODED}/${PART_ENCODED}) |"$'\n'
               done
               PARTS_COUNT=$COUNT
+
+              # Add merged link if available
+              if [ "$HAS_MERGED" = true ]; then
+                MERGED_PART_ENCODED=$(urlencode "$MERGED_FILE")
+                MERGED_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/DOWNLOAD/${FOLDER_ENCODED}/${MERGED_PART_ENCODED}"
+                MERGED_INFO="| 🔗 Merged | \`$MERGED_FILE\` | [Download single file]($MERGED_LINK) |"$'\n'
+              fi
             fi
 
+            # Write detailed README for this file/folder
             cat > "$BACKUP_DIR/$FOLDER_NAME/README.md" << ENG_EOF
           # $BASENAME_NO_EXT
 
@@ -515,6 +621,7 @@ jobs:
           | # | File | Link |
           |---|------|------|
           $DOWNLOAD_LINKS_MD
+          $MERGED_INFO
 
           ---
 
@@ -551,6 +658,7 @@ jobs:
           | # | فایل | لینک |
           |---|------|------|
           $DOWNLOAD_LINKS_MD
+          $MERGED_INFO
 
           ---
 
@@ -613,6 +721,7 @@ jobs:
                 PART_NAME="$BASENAME"
                 PART_ENCODED=$(urlencode "$PART_NAME")
                 DOWNLOAD_LINKS_MD="| 1 | \`$PART_NAME\` | [Download](https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/DOWNLOAD/${FOLDER_ENCODED}/${PART_ENCODED}) |"$'\n'
+                MERGED_INFO=""
               else
                 if [ "$USE_SPLIT_BY_SIZE" = true ]; then
                   SPLIT_SIZE_MB=$MAX_PART_SIZE_MB
@@ -649,6 +758,29 @@ jobs:
                   DOWNLOAD_LINKS_MD+="| $COUNT | \`$PART_NAME\` | [Download](https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/DOWNLOAD/${FOLDER_ENCODED}/${PART_ENCODED}) |"$'\n'
                 done
                 PARTS_COUNT=$COUNT
+
+                HAS_MERGED=false
+                MERGED_INFO=""
+                if [ ${#PARTS[@]} -gt 1 ]; then
+                  MERGE_DIR="$BACKUP_DIR/$FOLDER_NAME"
+                  FIRST_PART="${PARTS[0]}"
+                  if [ -f "$FIRST_PART" ]; then
+                    (cd "$MERGE_DIR" && zip -F "$(basename "$FIRST_PART")" --out "${FOLDER_NAME}_merged.zip" >/dev/null 2>&1)
+                    if [ -f "$MERGE_DIR/${FOLDER_NAME}_merged.zip" ]; then
+                      MERGED_FILE="${FOLDER_NAME}_merged.zip"
+                      MERGED_SIZE=$(stat -c%s "$MERGE_DIR/$MERGED_FILE")
+                      if [ "$MERGED_SIZE" -le 95000000 ]; then
+                        MERGED_SIZE_MB=$(echo "scale=2; $MERGED_SIZE / 1048576" | bc)
+                        HAS_MERGED=true
+                        MERGED_PART_ENCODED=$(urlencode "$MERGED_FILE")
+                        MERGED_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/DOWNLOAD/${FOLDER_ENCODED}/${MERGED_PART_ENCODED}"
+                        MERGED_INFO="| 🔗 Merged | \`$MERGED_FILE\` | [Download single file]($MERGED_LINK) |"$'\n'
+                      else
+                        rm -f "$MERGE_DIR/$MERGED_FILE"
+                      fi
+                    fi
+                  fi
+                fi
               fi
 
               cat > "$BACKUP_DIR/$FOLDER_NAME/README.md" << ENG_EOF
@@ -671,6 +803,7 @@ jobs:
           | # | File | Link |
           |---|------|------|
           $DOWNLOAD_LINKS_MD
+          $MERGED_INFO
 
           ---
 
@@ -706,6 +839,7 @@ jobs:
           | # | فایل | لینک |
           |---|------|------|
           $DOWNLOAD_LINKS_MD
+          $MERGED_INFO
 
           ---
 
@@ -738,90 +872,60 @@ jobs:
           echo "===== Backup folder contents ($BACKUP_DIR) ====="
           find "$BACKUP_DIR" -type f | head -50
 
-      - name: Update master READMEs
-        env:
-          REPO_OWNER: ${{ github.repository_owner }}
-          REPO_NAME: ${{ github.event.repository.name }}
-          BRANCH: ${{ github.ref_name }}
-          REPO_URL_BASE: ${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/DOWNLOAD
+      - name: Update DOWNLOAD READMEs
         run: |
           BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
-          REPO_OWNER="${REPO_OWNER}"
-          REPO_NAME="${REPO_NAME}"
-          BRANCH="${BRANCH}"
-          REPO_URL="${REPO_URL_BASE}"
-
           mkdir -p DOWNLOAD
           if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
             cp -r "$BACKUP_DIR"/* DOWNLOAD/
           fi
 
-          FOLDERS=$(find DOWNLOAD -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
-          if [ -z "$FOLDERS" ]; then
-            echo "No folders found in DOWNLOAD"
-            exit 0
-          fi
+          # Static README for DOWNLOAD folder (English)
+          cat > DOWNLOAD/README.md << 'EOF'
+          # Training and Important Notes
+          ---
 
-          urlencode() {
-            python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
-          }
+          ## Training:
+          1. The downloaded file is located at  
+          ``` {your repo}/DOWNLOAD/{`name file` or `custom name`} ```
+          2. In the Download Links section, click the Download button.
 
-          {
-            echo "# Downloaded Files List"
-            echo ""
-            for FOLDER in $FOLDERS; do
-              FOLDER_ENCODED=$(urlencode "$FOLDER")
-              echo "- [${FOLDER}](./${FOLDER_ENCODED})"
-            done
-            echo ""
-            echo "---"
-            echo ""
-            echo "*Tool by [MR.MMD2019](https://github.com/MRmmd2019)*"
-          } > DOWNLOAD/README.md
+          ---
 
-          {
-            echo "# لیست فایل‌های دانلود شده"
-            echo ""
-            for FOLDER in $FOLDERS; do
-              FOLDER_ENCODED=$(urlencode "$FOLDER")
-              echo "- [${FOLDER}](./${FOLDER_ENCODED})"
-            done
-            echo ""
-            echo "---"
-            echo ""
-            echo "*ابزار ساخته‌شده توسط [MR.MMD2019](https://github.com/MRmmd2019)*"
-          } > DOWNLOAD/README_FA.md
+          ## Notes:
 
-          SECTION_TITLE="فایل های دانلود شده در گیتهاب شما :"
-          if [ ! -f "README.md" ]; then
-            echo "# MR.MMD2019 Downloader" > README.md
-            echo "" >> README.md
-            echo "https://github.com/MRmmd2019" >> README.md
-            echo "" >> README.md
-          fi
+          - Each downloaded file includes a checksum file (SHA256SUMS) to verify its integrity.
+          - If you need to delete downloaded files, select the "Purge DOWNLOAD directory" option in the Actions tab to clean the entire DOWNLOAD folder.
 
-          if grep -q "$SECTION_TITLE" README.md; then
-            sed -i "/$SECTION_TITLE/,/^---$/d" README.md
-            sed -i '${/^$/d;}' README.md
-          fi
+          ---
 
-          {
-            echo ""
-            echo "---"
-            echo ""
-            echo "## $SECTION_TITLE"
-            echo ""
-            COUNTER=1
-            for FOLDER in $FOLDERS; do
-              FOLDER_ENCODED=$(urlencode "$FOLDER")
-              echo "${COUNTER}. [$FOLDER]($REPO_URL/$FOLDER_ENCODED)"
-              echo ""
-              COUNTER=$((COUNTER+1))
-            done
-            echo "---"
-          } >> README.md
+          **Tool by [`MR.MMD2019`](https://www.github.com/MRmmd2019/)**
+          EOF
 
-          echo "Master READMEs updated."
+          # Static README for DOWNLOAD folder (Persian)
+          cat > DOWNLOAD/README_FA.md << 'EOF'
+          # آموزش و نکات مهم
+          ---
+
+          ## آموزش:
+          1. فایل دانلود شده در مسیر  
+          ``` {your repo}/DOWNLOAD/{`name file` or `custom name`} ```
+          قرار دارد.
+          2. در بخش Download Links روی دکمه Download کلیک کنید.
+
+          ---
+
+          ## نکات:
+
+          - هر فایل دانلودی شامل یک فایل چک سام (SHA256SUMS) است که سلامت آن را تایید می‌کند.
+          - در صورتی که نیاز به حذف فایل‌های دانلودی بود، در بخش Actions گزینه Purge DOWNLOAD directory را انتخاب کنید تا تمام فولدر DOWNLOAD پاک‌سازی شود.
+
+          ---
+
+          **ابزار توسط [`MR.MMD2019`](https://www.github.com/MRmmd2019/)**
+          EOF
+
+          echo "Static DOWNLOAD README files created."
 
       - name: Incremental Commit & Push
         env:
@@ -845,9 +949,10 @@ jobs:
           echo "Files to push: $TOTAL_FILES"
 
           if [ $TOTAL_FILES -eq 0 ]; then
-            git add README.md DOWNLOAD/README.md DOWNLOAD/README_FA.md 2>/dev/null || true
+            # Only static readme files if no other files
+            git add DOWNLOAD/README.md DOWNLOAD/README_FA.md 2>/dev/null || true
             if ! git diff --cached --quiet; then
-              git commit -m "[MR.MMD2019] Update master READMEs [skip ci]"
+              git commit -m "[MR.MMD2019] Update DOWNLOAD READMEs [skip ci]"
               git push origin HEAD:"$BRANCH"
             fi
             exit 0
@@ -896,13 +1001,14 @@ jobs:
             }
           fi
 
+          # Final update of static READMEs
           git fetch origin "$BRANCH"
           git rebase origin/"$BRANCH" --quiet 2>/dev/null || git rebase --abort
           mkdir -p DOWNLOAD
           cp -r "$BACKUP_DIR"/* DOWNLOAD/ 2>/dev/null || true
-          git add DOWNLOAD/README.md DOWNLOAD/README_FA.md README.md
+          git add DOWNLOAD/README.md DOWNLOAD/README_FA.md
           if ! git diff --cached --quiet; then
-            git commit -m "[MR.MMD2019] Update master READMEs [skip ci]"
+            git commit -m "[MR.MMD2019] Update DOWNLOAD READMEs [skip ci]"
             timeout 180 git push origin HEAD:"$BRANCH" || echo "Warning: final README push failed"
           fi
           echo "All files pushed successfully."
