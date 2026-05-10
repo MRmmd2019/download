@@ -82,6 +82,7 @@ jobs:
           FOLDER_TO_DELETE: ${{ github.event.inputs.folder_to_delete }}
           DELETE_ALL: ${{ github.event.inputs.delete_all_folders }}
         run: |
+          set -e  # Exit immediately on any error
           SORT_OPTION="$SORT_OPTION"
           FOLDER_TO_DELETE="$FOLDER_TO_DELETE"
           DELETE_ALL="$DELETE_ALL"
@@ -93,28 +94,38 @@ jobs:
             exit 0
           fi
 
+          # Helper to remove a single directory via git
+          remove_git_dir() {
+            local dir="$1"
+            echo "🗑️ Removing $dir"
+            # Force remove even if it contains untracked files
+            git rm -rf "$dir" || {
+              echo "❌ git rm failed for $dir"
+              return 1
+            }
+          }
+
           # 1. Deletion of specific folder (if any)
           if [ "$FOLDER_TO_DELETE" != "none" ]; then
             TARGET="$DOWNLOAD_DIR/$FOLDER_TO_DELETE"
-            echo "🗑️ Deleting folder: $FOLDER_TO_DELETE"
-            git rm -r "$TARGET" || { echo "❌ Failed to delete folder: $FOLDER_TO_DELETE"; exit 1; }
+            remove_git_dir "$TARGET"
           fi
 
           # 2. Delete all folders (keep README files at root)
           if [ "$DELETE_ALL" = "true" ]; then
             echo "🗑️ Deleting all folders inside $DOWNLOAD_DIR (root READMEs stay)..."
             while IFS= read -r -d '' dir; do
-              echo "Removing $dir"
-              git rm -r "$dir" || { echo "❌ Failed to remove $dir"; exit 1; }
+              remove_git_dir "$dir"
             done < <(find "$DOWNLOAD_DIR" -mindepth 1 -maxdepth 1 -type d -print0)
 
-            # Also remove any left-over files that are not the allowed READMEs
+            # Remove stray files that are not the protected README
             while IFS= read -r -d '' file; do
-              git rm "$file" || echo "⚠️ Could not remove $file (may already be staged)"
+              echo "🗑️ Removing stray file: $file"
+              git rm -f "$file" || echo "⚠️ Could not remove $file"
             done < <(find "$DOWNLOAD_DIR" -maxdepth 1 -type f ! -name "README.md" ! -name "README_FA.md" -print0)
           fi
 
-          # 3. Sorting (A-Z or Z-A) – only if any folders remain
+          # 3. Sorting (unchanged)
           if [ "$SORT_OPTION" != "no-sort" ]; then
             mapfile -t dirs < <(find "$DOWNLOAD_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
             if [ ${#dirs[@]} -eq 0 ]; then
@@ -148,15 +159,22 @@ jobs:
             echo "✅ Folders sorted successfully."
           fi
 
-          # Commit and push (if changes exist)
+          # 4. Commit & push (explicit remote & branch)
           if ! git diff --cached --quiet; then
-            git commit -m "🔧 Folder management: sort/delete" || echo "Nothing to commit."
-            timeout 180 git push || {
+            echo "📝 Staging changes..."
+            git status
+            git commit -m "🔧 Folder management: sort/delete"
+            echo "🚀 Pushing to origin/${GITHUB_REF_NAME}..."
+            git push origin "${GITHUB_REF_NAME}" || {
               echo "⚠️ Push failed, attempting rebase..."
-              git pull --rebase origin "${GITHUB_REF_NAME}" || exit 1
-              timeout 180 git push || exit 1
+              git pull --rebase origin "${GITHUB_REF_NAME}"
+              git push origin "${GITHUB_REF_NAME}"
             }
             echo "🎉 Changes pushed successfully."
           else
             echo "✅ No changes to push."
           fi
+
+          # 5. Final verification
+          echo "📁 Folders after operation:"
+          find "$DOWNLOAD_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort || echo "(none)"
