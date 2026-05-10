@@ -1,33 +1,21 @@
-name: 📂 Folder Manager (Sort & Delete) - Stable
+name: 🗑️ Delete entire DOWNLOAD folder
 
 on:
   workflow_dispatch:
     inputs:
-      sort_option:
-        description: 'Sort folders inside DOWNLOAD'
+      confirm:
+        description: 'Type "DELETE" to confirm complete removal of the DOWNLOAD folder and all its contents.'
         required: true
-        type: choice
-        default: 'no-sort'
-        options:
-          - 'no-sort'
-          - 'sort-az'
-          - 'sort-za'
-      folder_to_delete:
-        description: 'Exact folder name to delete (type "none" to skip)'
-        required: false
+        default: ''
         type: string
-        default: 'none'
-      delete_all_folders:
-        description: 'Delete ALL folders in DOWNLOAD (keeps README files)'
-        required: false
-        type: boolean
-        default: false
 
 jobs:
-  manage-folders:
+  delete-download:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -35,169 +23,68 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Display current folders
+      - name: Configure Git
         run: |
-          echo "📁 Current folders inside DOWNLOAD/:"
-          if [ -d DOWNLOAD ]; then
-            find DOWNLOAD -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort || echo "(none)"
-          else
-            echo "(DOWNLOAD folder does not exist yet)"
-          fi
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
 
-      - name: Validate inputs
-        env:
-          SORT_OPTION: ${{ github.event.inputs.sort_option }}
-          FOLDER_TO_DELETE: ${{ github.event.inputs.folder_to_delete }}
-          DELETE_ALL: ${{ github.event.inputs.delete_all_folders }}
+      - name: Validate confirmation
         run: |
-          SORT_OPTION="$SORT_OPTION"
-          FOLDER_TO_DELETE="$FOLDER_TO_DELETE"
-          DELETE_ALL="$DELETE_ALL"
-          ERROR_MSG=""
-          if [ "$DELETE_ALL" = "true" ] && [ "$SORT_OPTION" != "no-sort" ]; then
-            ERROR_MSG="❌ Cannot sort while deleting all folders. Set sort to 'no-sort' or uncheck delete all."
-          fi
-          if [ "$DELETE_ALL" = "true" ] && [ "$FOLDER_TO_DELETE" != "none" ]; then
-            ERROR_MSG="❌ Cannot delete a specific folder when 'Delete all folders' is checked."
-          fi
-          if [ "$FOLDER_TO_DELETE" != "none" ] && [ -d "DOWNLOAD" ]; then
-            if [ ! -d "DOWNLOAD/$FOLDER_TO_DELETE" ]; then
-              EXISTING=$(find DOWNLOAD -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tr '\n' ' ')
-              ERROR_MSG="❌ Folder '${FOLDER_TO_DELETE}' not found. Available: ${EXISTING:-none}"
-            fi
-          fi
-          if [ -n "$ERROR_MSG" ]; then
-            echo "$ERROR_MSG"
+          if [ "${{ github.event.inputs.confirm }}" != "DELETE" ]; then
+            echo "❌ You must type DELETE exactly to confirm. Aborting."
             exit 1
           fi
-          echo "✅ Inputs valid."
+          echo "✅ Confirmation valid."
 
-      - name: Perform folder operations
-        env:
-          SORT_OPTION: ${{ github.event.inputs.sort_option }}
-          FOLDER_TO_DELETE: ${{ github.event.inputs.folder_to_delete }}
-          DELETE_ALL: ${{ github.event.inputs.delete_all_folders }}
+      - name: Remove DOWNLOAD folder completely
         run: |
           BRANCH="${GITHUB_REF_NAME}"
-          SORT_OPTION="$SORT_OPTION"
-          FOLDER_TO_DELETE="$FOLDER_TO_DELETE"
-          DELETE_ALL="$DELETE_ALL"
-          DOWNLOAD_DIR="DOWNLOAD"
 
-          if [ ! -d "$DOWNLOAD_DIR" ]; then
-            echo "📁 DOWNLOAD directory does not exist. Nothing to do."
-            exit 0
-          fi
+          echo "🗑️ Removing DOWNLOAD folder entirely..."
 
-          # تابع حذف امن یک مسیر (با استفاده از روش موفق قبلی)
-          safe_remove_path() {
-            local path="$1"
-            echo "🗑️ Removing $path"
-            # ابتدا سعی در حذف از ردیابی گیت (اگر track شده باشد)
-            git rm -rf "$path" 2>/dev/null || true
-            # سپس پاک کردن از روی دیسک
-            rm -rf "$path" 2>/dev/null || true
-          }
+          # حذف از ردیابی گیت (با چشم‌پوشی از خطا اگر فایلی track نباشد)
+          git rm -rf DOWNLOAD/ 2>/dev/null || true
 
-          # 1. حذف پوشه خاص (در صورت درخواست)
-          if [ "$FOLDER_TO_DELETE" != "none" ]; then
-            TARGET="$DOWNLOAD_DIR/$FOLDER_TO_DELETE"
-            if [ -d "$TARGET" ]; then
-              safe_remove_path "$TARGET"
-              echo "✅ Folder '$FOLDER_TO_DELETE' removed."
-            else
-              echo "⚠️ Folder '$FOLDER_TO_DELETE' not found, skipping."
-            fi
-          fi
+          # پاک‌سازی فیزیکی از روی دیسک
+          rm -rf DOWNLOAD 2>/dev/null || true
 
-          # 2. حذف همه پوشه‌ها (به جز README ها)
-          if [ "$DELETE_ALL" = "true" ]; then
-            echo "🗑️ Deleting all folders inside $DOWNLOAD_DIR..."
-            # حذف تکی تمام دایرکتوری‌های سطح اول (با استفاده از تابع امن)
-            while IFS= read -r -d '' dir; do
-              safe_remove_path "$dir"
-            done < <(find "$DOWNLOAD_DIR" -mindepth 1 -maxdepth 1 -type d -print0)
+          # Stage کردن حذف‌ها (git add -A تغییرات را ثبت می‌کند)
+          git add -A
 
-            # حذف فایل‌های اضافی (غیر از README.md و README_FA.md)
-            while IFS= read -r -d '' file; do
-              case "$(basename "$file")" in
-                README.md|README_FA.md) continue ;;
-              esac
-              echo "🗑️ Removing stray file: $file"
-              rm -f "$file" 2>/dev/null || true
-            done < <(find "$DOWNLOAD_DIR" -maxdepth 1 -type f ! -name "README.md" ! -name "README_FA.md" -print0)
-
-            echo "✅ All folders deleted."
-          fi
-
-          # 3. مرتب‌سازی (در صورت انتخاب)
-          if [ "$SORT_OPTION" != "no-sort" ]; then
-            mapfile -t dirs < <(find "$DOWNLOAD_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
-            if [ ${#dirs[@]} -eq 0 ]; then
-              echo "📁 No folders to sort."
-            else
-              if [ "$SORT_OPTION" = "sort-za" ]; then
-                mapfile -t dirs < <(printf '%s\n' "${dirs[@]}" | sort -r)
-              else
-                mapfile -t dirs < <(printf '%s\n' "${dirs[@]}" | sort)
-              fi
-
-              echo "Sorting folders: ${dirs[*]}"
-              TEMP_PREFIX="sort_tmp_$$_"
-
-              for i in "${!dirs[@]}"; do
-                orig="$DOWNLOAD_DIR/${dirs[$i]}"
-                tmp="$DOWNLOAD_DIR/${TEMP_PREFIX}${i}"
-                if [ -d "$orig" ]; then
-                  # تلاش با git mv، در صورت شکست با mv معمولی
-                  git mv "$orig" "$tmp" 2>/dev/null || mv "$orig" "$tmp" || true
-                fi
-              done
-
-              for i in "${!dirs[@]}"; do
-                tmp="$DOWNLOAD_DIR/${TEMP_PREFIX}${i}"
-                final="$DOWNLOAD_DIR/${dirs[$i]}"
-                if [ -d "$tmp" ]; then
-                  git mv "$tmp" "$final" 2>/dev/null || mv "$tmp" "$final" || true
-                fi
-              done
-              echo "✅ Folders sorted."
-            fi
-          fi
-
-          # 4. Stage تمام تغییرات (حذف، اضافه، تغییر نام)
-          echo "📝 Staging changes..."
-          git add -A "$DOWNLOAD_DIR"
-
-          # 5. اگر تغییری نبود خارج شو
+          # بررسی وجود تغییری برای commit
           if git diff --cached --quiet; then
-            echo "✅ No changes to push."
+            echo "ℹ️ No changes to commit (DOWNLOAD folder may already be absent)."
             exit 0
           fi
 
-          # 6. Commit و push با ریترای مقاوم
-          git commit -m "🔧 Folder management: sort/delete [skip ci]" || true
+          # Commit
+          git commit -m "🗑️ Remove entire DOWNLOAD folder [skip ci]"
 
-          echo "🚀 Pushing to origin/$BRANCH..."
+          echo "🚀 Pushing changes..."
+
+          # Push با ریترای و rebase (همان روش اثبات‌شده)
           RETRY=0
           MAX_RETRIES=5
           while [ $RETRY -lt $MAX_RETRIES ]; do
             RETRY=$((RETRY + 1))
+
             git fetch origin "$BRANCH" --quiet 2>/dev/null || true
             git rebase origin/"$BRANCH" 2>/dev/null || {
               git rebase --abort 2>/dev/null || true
               git reset --hard origin/"$BRANCH" 2>/dev/null || true
-              # اعمال دوباره تغییرات در صورت لزوم (اما معمولاً فقط README تغییر کرده)
-              mkdir -p "$DOWNLOAD_DIR"
-              # اگر README وجود نداشت دوباره بساز (اختیاری)
-              if [ ! -f "$DOWNLOAD_DIR/README.md" ]; then
-                echo "# Downloads" > "$DOWNLOAD_DIR/README.md"
-              fi
-              git add -A "$DOWNLOAD_DIR"
-              git commit -m "🔧 Folder management: sort/delete [skip ci]" 2>/dev/null || true
+              git pull --rebase origin "$BRANCH" 2>/dev/null || true
+              # دوباره تغییرات را اعمال کن (در اینجا حذف DOWNLOAD)
+              git rm -rf DOWNLOAD/ 2>/dev/null || true
+              rm -rf DOWNLOAD 2>/dev/null || true
+              git add -A
+              git commit -m "🗑️ Remove entire DOWNLOAD folder [skip ci]" 2>/dev/null || true
             }
+
             if timeout 60 git push origin HEAD:"$BRANCH" 2>&1; then
-              echo "🎉 Changes pushed successfully."
+              echo ""
+              echo "=========================================="
+              echo "✅ DOWNLOAD folder deleted successfully!"
+              echo "=========================================="
               exit 0
             else
               echo "Push failed, retry $RETRY/$MAX_RETRIES..."
