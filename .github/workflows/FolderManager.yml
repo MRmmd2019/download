@@ -35,7 +35,16 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Validate inputs
+      - name: Display current folders (informational)
+        run: |
+          echo "📁 Current folders inside DOWNLOAD/:"
+          if [ -d DOWNLOAD ]; then
+            find DOWNLOAD -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort || echo "(none)"
+          else
+            echo "(DOWNLOAD folder does not exist yet)"
+          fi
+
+      - name: Validate inputs against existing folders
         env:
           SORT_OPTION: ${{ github.event.inputs.sort_option }}
           FOLDER_TO_DELETE: ${{ github.event.inputs.folder_to_delete }}
@@ -53,6 +62,13 @@ jobs:
           # Prevent specifying a specific folder while delete all is selected
           if [ "$DELETE_ALL" = "true" ] && [ "$FOLDER_TO_DELETE" != "none" ]; then
             ERROR_MSG="❌ Cannot delete a specific folder while 'Delete all folders' is checked. Either uncheck 'Delete all folders' or set 'Folder to delete' to 'none'."
+          fi
+          # If a specific folder is given, check its existence
+          if [ "$FOLDER_TO_DELETE" != "none" ] && [ -d "DOWNLOAD" ]; then
+            if [ ! -d "DOWNLOAD/$FOLDER_TO_DELETE" ]; then
+              EXISTING=$(find DOWNLOAD -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tr '\n' ' ')
+              ERROR_MSG="❌ Folder '${FOLDER_TO_DELETE}' not found in DOWNLOAD/. Available folders: ${EXISTING:-none}"
+            fi
           fi
           if [ -n "$ERROR_MSG" ]; then
             echo "$ERROR_MSG"
@@ -77,25 +93,16 @@ jobs:
             exit 0
           fi
 
-          # ------------------------------------------------------------------
           # 1. Deletion of specific folder (if any)
-          # ------------------------------------------------------------------
           if [ "$FOLDER_TO_DELETE" != "none" ]; then
             TARGET="$DOWNLOAD_DIR/$FOLDER_TO_DELETE"
-            if [ -d "$TARGET" ]; then
-              echo "🗑️ Deleting folder: $FOLDER_TO_DELETE"
-              git rm -r "$TARGET" || { echo "❌ Failed to delete folder: $FOLDER_TO_DELETE"; exit 1; }
-            else
-              echo "⚠️ Folder '$FOLDER_TO_DELETE' not found in DOWNLOAD. Skipping deletion."
-            fi
+            echo "🗑️ Deleting folder: $FOLDER_TO_DELETE"
+            git rm -r "$TARGET" || { echo "❌ Failed to delete folder: $FOLDER_TO_DELETE"; exit 1; }
           fi
 
-          # ------------------------------------------------------------------
-          # 2. Delete all folders (keep README.md / README_FA.md at root)
-          # ------------------------------------------------------------------
+          # 2. Delete all folders (keep README files at root)
           if [ "$DELETE_ALL" = "true" ]; then
             echo "🗑️ Deleting all folders inside $DOWNLOAD_DIR (root READMEs stay)..."
-            # Find all directories one level deep and remove them
             while IFS= read -r -d '' dir; do
               echo "Removing $dir"
               git rm -r "$dir" || { echo "❌ Failed to remove $dir"; exit 1; }
@@ -107,11 +114,8 @@ jobs:
             done < <(find "$DOWNLOAD_DIR" -maxdepth 1 -type f ! -name "README.md" ! -name "README_FA.md" -print0)
           fi
 
-          # ------------------------------------------------------------------
           # 3. Sorting (A-Z or Z-A) – only if any folders remain
-          # ------------------------------------------------------------------
           if [ "$SORT_OPTION" != "no-sort" ]; then
-            # Get current list of directories (after deletions)
             mapfile -t dirs < <(find "$DOWNLOAD_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
             if [ ${#dirs[@]} -eq 0 ]; then
               echo "📁 No folders to sort."
@@ -119,15 +123,12 @@ jobs:
             fi
 
             if [ "$SORT_OPTION" = "sort-za" ]; then
-              # Reverse the array
               mapfile -t dirs < <(printf '%s\n' "${dirs[@]}" | sort -r)
             else
-              # Already sorted A-Z from find+sort above
               mapfile -t dirs < <(printf '%s\n' "${dirs[@]}" | sort)
             fi
 
             echo "Sorting folders: ${dirs[*]}"
-            # Use temp prefixes to avoid name clashes
             TEMP_PREFIX="temp_ren_$$_"
             for i in "${!dirs[@]}"; do
               orig="$DOWNLOAD_DIR/${dirs[$i]}"
@@ -136,7 +137,6 @@ jobs:
                 git mv "$orig" "$tmp" || { echo "❌ Failed to rename $orig to $tmp"; exit 1; }
               fi
             done
-            # Now rename to final sorted order (A-Z already sorted list, Z-A reversed)
             final_dirs=("${dirs[@]}")
             for i in "${!final_dirs[@]}"; do
               tmp="$DOWNLOAD_DIR/${TEMP_PREFIX}_${i}"
@@ -148,9 +148,7 @@ jobs:
             echo "✅ Folders sorted successfully."
           fi
 
-          # ------------------------------------------------------------------
           # Commit and push (if changes exist)
-          # ------------------------------------------------------------------
           if ! git diff --cached --quiet; then
             git commit -m "🔧 Folder management: sort/delete" || echo "Nothing to commit."
             timeout 180 git push || {
