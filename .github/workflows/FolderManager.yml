@@ -1,0 +1,164 @@
+name: 📂 Folder Manager (Sort & Delete)
+
+on:
+  workflow_dispatch:
+    inputs:
+      sort_option:
+        description: 'Sort folders inside DOWNLOAD'
+        required: true
+        type: choice
+        default: 'no-sort'
+        options:
+          - 'no-sort'
+          - 'sort-az'
+          - 'sort-za'
+      folder_to_delete:
+        description: 'Exact folder name to delete (type "none" to skip)'
+        required: false
+        type: string
+        default: 'none'
+      delete_all_folders:
+        description: 'Delete ALL folders in DOWNLOAD (keeps README files)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  manage-folders:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Validate inputs
+        env:
+          SORT_OPTION: ${{ github.event.inputs.sort_option }}
+          FOLDER_TO_DELETE: ${{ github.event.inputs.folder_to_delete }}
+          DELETE_ALL: ${{ github.event.inputs.delete_all_folders }}
+        run: |
+          SORT_OPTION="$SORT_OPTION"
+          FOLDER_TO_DELETE="$FOLDER_TO_DELETE"
+          DELETE_ALL="$DELETE_ALL"
+
+          ERROR_MSG=""
+          # Prevent sort + delete all
+          if [ "$DELETE_ALL" = "true" ] && [ "$SORT_OPTION" != "no-sort" ]; then
+            ERROR_MSG="❌ Cannot sort folders while deleting all of them. Please set 'Sort Option' to 'no-sort' or uncheck 'Delete all folders'."
+          fi
+          # Prevent specifying a specific folder while delete all is selected
+          if [ "$DELETE_ALL" = "true" ] && [ "$FOLDER_TO_DELETE" != "none" ]; then
+            ERROR_MSG="❌ Cannot delete a specific folder while 'Delete all folders' is checked. Either uncheck 'Delete all folders' or set 'Folder to delete' to 'none'."
+          fi
+          if [ -n "$ERROR_MSG" ]; then
+            echo "$ERROR_MSG"
+            exit 1
+          fi
+          echo "✅ Inputs valid."
+
+      - name: Perform folder operations
+        env:
+          SORT_OPTION: ${{ github.event.inputs.sort_option }}
+          FOLDER_TO_DELETE: ${{ github.event.inputs.folder_to_delete }}
+          DELETE_ALL: ${{ github.event.inputs.delete_all_folders }}
+        run: |
+          SORT_OPTION="$SORT_OPTION"
+          FOLDER_TO_DELETE="$FOLDER_TO_DELETE"
+          DELETE_ALL="$DELETE_ALL"
+          DOWNLOAD_DIR="DOWNLOAD"
+
+          # Ensure DOWNLOAD directory exists
+          if [ ! -d "$DOWNLOAD_DIR" ]; then
+            echo "📁 DOWNLOAD directory does not exist. Nothing to do."
+            exit 0
+          fi
+
+          # ------------------------------------------------------------------
+          # 1. Deletion of specific folder (if any)
+          # ------------------------------------------------------------------
+          if [ "$FOLDER_TO_DELETE" != "none" ]; then
+            TARGET="$DOWNLOAD_DIR/$FOLDER_TO_DELETE"
+            if [ -d "$TARGET" ]; then
+              echo "🗑️ Deleting folder: $FOLDER_TO_DELETE"
+              git rm -r "$TARGET" || { echo "❌ Failed to delete folder: $FOLDER_TO_DELETE"; exit 1; }
+            else
+              echo "⚠️ Folder '$FOLDER_TO_DELETE' not found in DOWNLOAD. Skipping deletion."
+            fi
+          fi
+
+          # ------------------------------------------------------------------
+          # 2. Delete all folders (keep README.md / README_FA.md at root)
+          # ------------------------------------------------------------------
+          if [ "$DELETE_ALL" = "true" ]; then
+            echo "🗑️ Deleting all folders inside $DOWNLOAD_DIR (root READMEs stay)..."
+            # Find all directories one level deep and remove them
+            while IFS= read -r -d '' dir; do
+              echo "Removing $dir"
+              git rm -r "$dir" || { echo "❌ Failed to remove $dir"; exit 1; }
+            done < <(find "$DOWNLOAD_DIR" -mindepth 1 -maxdepth 1 -type d -print0)
+
+            # Also remove any left-over files that are not the allowed READMEs
+            while IFS= read -r -d '' file; do
+              git rm "$file" || echo "⚠️ Could not remove $file (may already be staged)"
+            done < <(find "$DOWNLOAD_DIR" -maxdepth 1 -type f ! -name "README.md" ! -name "README_FA.md" -print0)
+          fi
+
+          # ------------------------------------------------------------------
+          # 3. Sorting (A-Z or Z-A) – only if any folders remain
+          # ------------------------------------------------------------------
+          if [ "$SORT_OPTION" != "no-sort" ]; then
+            # Get current list of directories (after deletions)
+            mapfile -t dirs < <(find "$DOWNLOAD_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+            if [ ${#dirs[@]} -eq 0 ]; then
+              echo "📁 No folders to sort."
+              exit 0
+            fi
+
+            if [ "$SORT_OPTION" = "sort-za" ]; then
+              # Reverse the array
+              mapfile -t dirs < <(printf '%s\n' "${dirs[@]}" | sort -r)
+            else
+              # Already sorted A-Z from find+sort above
+              mapfile -t dirs < <(printf '%s\n' "${dirs[@]}" | sort)
+            fi
+
+            echo "Sorting folders: ${dirs[*]}"
+            # Use temp prefixes to avoid name clashes
+            TEMP_PREFIX="temp_ren_$$_"
+            for i in "${!dirs[@]}"; do
+              orig="$DOWNLOAD_DIR/${dirs[$i]}"
+              tmp="$DOWNLOAD_DIR/${TEMP_PREFIX}_${i}"
+              if [ -d "$orig" ]; then
+                git mv "$orig" "$tmp" || { echo "❌ Failed to rename $orig to $tmp"; exit 1; }
+              fi
+            done
+            # Now rename to final sorted order (A-Z already sorted list, Z-A reversed)
+            final_dirs=("${dirs[@]}")
+            for i in "${!final_dirs[@]}"; do
+              tmp="$DOWNLOAD_DIR/${TEMP_PREFIX}_${i}"
+              final="$DOWNLOAD_DIR/${final_dirs[$i]}"
+              if [ -d "$tmp" ]; then
+                git mv "$tmp" "$final" || { echo "❌ Failed to rename to $final"; exit 1; }
+              fi
+            done
+            echo "✅ Folders sorted successfully."
+          fi
+
+          # ------------------------------------------------------------------
+          # Commit and push (if changes exist)
+          # ------------------------------------------------------------------
+          if ! git diff --cached --quiet; then
+            git commit -m "🔧 Folder management: sort/delete" || echo "Nothing to commit."
+            timeout 180 git push || {
+              echo "⚠️ Push failed, attempting rebase..."
+              git pull --rebase origin "${GITHUB_REF_NAME}" || exit 1
+              timeout 180 git push || exit 1
+            }
+            echo "🎉 Changes pushed successfully."
+          else
+            echo "✅ No changes to push."
+          fi
