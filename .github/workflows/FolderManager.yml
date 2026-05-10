@@ -36,15 +36,15 @@ jobs:
           echo ""
 
           # Check if downloads folder exists in git
-          if [ -d "downloads" ]; then
+          if [ -d "DOWNLOAD" ]; then
             echo "Removing downloads folder from Git tracking..."
 
             # Use git rm to properly remove tracked files
             # This stages the deletion for commit
-            git rm -rf downloads/ 2>/dev/null || true
+            git rm -rf DOWNLOAD/ 2>/dev/null || true
 
             # Also remove any untracked files
-            rm -rf downloads 2>/dev/null || true
+            rm -rf DOWNLOAD 2>/dev/null || true
 
             echo "Downloads folder removed from Git"
           else
@@ -52,7 +52,7 @@ jobs:
           fi
 
           # Create fresh downloads folder
-          mkdir -p downloads
+          mkdir -p DOWNLOAD
 
           # IMPORTANT: Git doesn't track empty folders!
           # We MUST add a file inside for Git to track the folder
@@ -68,12 +68,12 @@ jobs:
             echo "---"
             echo ""
             echo "*This tool created by [avasam.ir](https://avasam.ir)*"
-          } > downloads/README.md
+          } > DOWNLOAD/README.md
 
-          echo "Created downloads/README.md"
+          echo "Created DOWNLOAD/README.md"
 
           # Stage the new README file
-          git add downloads/README.md
+          git add DOWNLOAD/README.md
 
           # Check if there are changes to commit
           if git diff --staged --quiet; then
@@ -103,10 +103,10 @@ jobs:
               git pull --rebase origin "$BRANCH" 2>/dev/null || true
 
               # Recreate our changes
-              mkdir -p downloads
-              git rm -rf downloads/ 2>/dev/null || true
-              rm -rf downloads 2>/dev/null || true
-              mkdir -p downloads
+              mkdir -p DOWNLOAD
+              git rm -rf DOWNLOAD/ 2>/dev/null || true
+              rm -rf DOWNLOAD 2>/dev/null || true
+              mkdir -p DOWNLOAD
               {
                 echo "# Downloads"
                 echo ""
@@ -119,8 +119,8 @@ jobs:
                 echo "---"
                 echo ""
                 echo "*This tool created by [avasam.ir](https://avasam.ir)*"
-              } > downloads/README.md
-              git add -A downloads/
+              } > DOWNLOAD/README.md
+              git add -A DOWNLOAD/
               git commit -m "[AVASAM] Clean downloads folder [skip ci]" 2>/dev/null || true
             }
 
