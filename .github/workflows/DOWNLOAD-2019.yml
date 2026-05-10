@@ -22,7 +22,7 @@ on:
         default: ''
         type: string
       split_parts:
-        description: 'Number of parts to split into (1-16). 1 = no split. Ignored if max_part_size_mb > 0'
+        description: 'Number of parts to split into (1-1000). 1 = no split. Ignored if max_part_size_mb > 0'
         required: false
         default: 1
         type: number
@@ -130,7 +130,7 @@ jobs:
           BRANCH="${BRANCH}"
 
           # Validate split_parts
-          if [ "$SPLIT_PARTS" -lt 1 ] || [ "$SPLIT_PARTS" -gt 16 ]; then
+          if [ "$SPLIT_PARTS" -lt 1 ] || [ "$SPLIT_PARTS" -gt 1000 ]; then
             echo "Invalid split_parts: $SPLIT_PARTS. Using default 1 (no split)."
             SPLIT_PARTS=1
           fi
