@@ -10,7 +10,7 @@
 | Status            | ✅ Complete                    |
 | Password Protected| NO |
 | SHA256 Checksum   | `0f44d18d74731dac6ff44de72965d72105db17b10a4efaa76497f35188b42b03`                  |
-| Compression Level | 9 |
+| Compression Level | 6 |
 
 ---
 
