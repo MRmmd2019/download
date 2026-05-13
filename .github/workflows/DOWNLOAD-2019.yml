@@ -8,7 +8,7 @@
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 #
 # CHANGELOG v4.1 (from v4.0):
-#   FIX [CRITICAL]: Removed all ${{ }} inside run blocks (timeout_minutes)
+#   FIX [CRITICAL]: Removed all  inside run blocks (timeout_minutes)
 #   FIX [MEDIUM]:   Backtick escaping bug in README generator
 #   FIX [IMPROVED]: Minor robustness in chunk assembly
 
@@ -162,7 +162,7 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "  🚀 MR.MMD2019 — Professional Downloader v4.1"
           echo "  🌐 https://github.com/MRmmd2019"
-          echo "  🔧 YAML-compliant · Array-safe · Trap-clean · No ${{ }} in run"
+          echo "  🔧 YAML-compliant · Array-safe · Trap-clean · No in run"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       # ── 5. Main download & processing step ───────────────────────────────────
