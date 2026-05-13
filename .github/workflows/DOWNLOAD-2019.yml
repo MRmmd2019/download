@@ -4,59 +4,88 @@
 # ║   Features: Smart splitting · Multi-format archive · UA rotation            ║
 # ║             Parallel download · Full fallback chain · Rich reporting        ║
 # ║             Disk-space guard · Dedup check · Trap cleanup · Speed meter     ║
-# ╚══════════════════════════════════════════════════════════════════════════════
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+#
+# CHANGELOG v4.0 (from v3.0):
+#   FIX [YAML CRITICAL ×53]: All heredoc content with '>' or '|' at column-0
+#       broke strict YAML parsers. Fixed by indenting heredoc bodies to the
+#       block-scalar level; YAML strips the indent before handing to the shell.
+#   FIX [BASH CRITICAL ×4]:  LOG=$(...) without || true under set -euo pipefail
+#       caused silent script abort on any tool failure. Added || true.
+#   FIX [BASH CRITICAL]:    export -a cannot export bash arrays.
+#       UA_POOL and COMMON_HEADERS are now serialised via NUL-delimited strings.
+#   FIX [BASH HIGH]:        cat $(ls …) unsafe with special filenames.
+#       Replaced with safe glob expansion.
+#   FIX [BASH HIGH]:        eval "ARR=…" for indirect array access.
+#       Replaced with declare -n nameref (bash ≥4.3, available on ubuntu-latest).
+#   FIX [BASH HIGH]:        No trap handler → /tmp dirs leaked on failure.
+#       Added trap cleanup EXIT ERR INT TERM.
+#   FIX [BASH HIGH]:        wget --spider output on stderr not captured.
+#       Added 2>&1 redirect.
+#   FIX [BASH MEDIUM]:      set -m in non-interactive shell is unreliable.
+#       Replaced with manual pid-array wait loop.
+#   FIX [BASH MEDIUM]:      declare -A JOB_FILES=() declared but never used.
+#       Removed dead code.
+#   ADD [IMPROVEMENT]:      Disk-space guard before downloads start.
+#   ADD [IMPROVEMENT]:      Download speed / elapsed-time reporting.
+#   ADD [IMPROVEMENT]:      Deduplication: skip file if already present in DOWNLOAD/.
+#   ADD [IMPROVEMENT]:      HTTP status-code surfaced in error messages.
+#   ADD [IMPROVEMENT]:      Chunk-download throttled (≤8 concurrent chunks).
+#   ADD [IMPROVEMENT]:      Final JSON summary report (summary.json per folder).
+
 name: DOWNLOADER-2019
 
 on:
   workflow_dispatch:
     inputs:
+
       # ── URLs ──────────────────────────────────────────────────────────────────
       urls:
-        description: "URLs (space-separated) — primary download sources"
+        description: 'URLs (space-separated) — primary download sources'
         required: true
         type: string
 
       urls_mirror1:
-        description: "Mirror 1 — fallback URLs (space-separated, same order as primary)"
+        description: 'Mirror 1 — fallback URLs (space-separated, same order as primary)'
         required: false
-        default: ""
+        default: ''
         type: string
 
       urls_mirror2:
-        description: "Mirror 2 — fallback URLs (space-separated, same order as primary)"
+        description: 'Mirror 2 — fallback URLs (space-separated, same order as primary)'
         required: false
-        default: ""
+        default: ''
         type: string
 
       urls_mirror3:
-        description: "Mirror 3 — fallback URLs (space-separated, same order as primary)"
+        description: 'Mirror 3 — fallback URLs (space-separated, same order as primary)'
         required: false
-        default: ""
+        default: ''
         type: string
 
       urls_mirror4:
-        description: "Mirror 4 — fallback URLs (space-separated, same order as primary)"
+        description: 'Mirror 4 — fallback URLs (space-separated, same order as primary)'
         required: false
-        default: ""
+        default: ''
         type: string
 
       urls_mirror5:
-        description: "Mirror 5 — fallback URLs (space-separated, same order as primary)"
+        description: 'Mirror 5 — fallback URLs (space-separated, same order as primary)'
         required: false
-        default: ""
+        default: ''
         type: string
 
       urls_mirror6:
-        description: "Mirror 6 — fallback URLs (space-separated, same order as primary)"
+        description: 'Mirror 6 — fallback URLs (space-separated, same order as primary)'
         required: false
-        default: ""
+        default: ''
         type: string
 
       # ── Download Mode ─────────────────────────────────────────────────────────
       mode:
-        description: "normal = save file as-is | zip = compress into archive"
+        description: 'normal = save file as-is | zip = compress into archive'
         required: false
-        default: "normal"
+        default: 'normal'
         type: choice
         options:
           - normal
@@ -68,7 +97,7 @@ on:
           Archive format (ZIP mode only). First choice is primary; others become fallbacks.
           Formats tried in order: selected → zip → 7z → tar.gz → tar.bz2 → tar.xz
         required: false
-        default: "zip"
+        default: 'zip'
         type: choice
         options:
           - zip
@@ -80,29 +109,29 @@ on:
 
       # ── Archive Options ───────────────────────────────────────────────────────
       password:
-        description: "Password to protect the archive (optional, ZIP mode only)"
+        description: 'Password to protect the archive (optional, ZIP mode only)'
         required: false
-        default: ""
+        default: ''
         type: string
 
       compression_level:
-        description: "Compression level (1 = fastest / largest  ·  9 = slowest / smallest)"
+        description: 'Compression level (1 = fastest / largest  ·  9 = slowest / smallest)'
         required: false
-        default: "6"
+        default: '6'
         type: string
 
       # ── Output ────────────────────────────────────────────────────────────────
       output_name:
-        description: "Custom output name — leave empty to keep original filename"
+        description: 'Custom output name — leave empty to keep original filename'
         required: false
-        default: ""
+        default: ''
         type: string
 
       # ── Timeout ───────────────────────────────────────────────────────────────
       timeout_minutes:
-        description: "Maximum job runtime in minutes (10–360)"
+        description: 'Maximum job runtime in minutes (10–360)'
         required: false
-        default: "120"
+        default: '120'
         type: string
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -114,6 +143,7 @@ jobs:
       contents: write
 
     steps:
+
       # ── 1. Checkout ───────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -159,21 +189,21 @@ jobs:
       # ── 5. Main download & processing step ───────────────────────────────────
       - name: Download and process files
         env:
-          MODE: ${{ github.event.inputs.mode }}
+          MODE:           ${{ github.event.inputs.mode }}
           ARCHIVE_FORMAT: ${{ github.event.inputs.archive_format }}
-          URLS: ${{ github.event.inputs.urls }}
-          URLS_MIRROR1: ${{ github.event.inputs.urls_mirror1 }}
-          URLS_MIRROR2: ${{ github.event.inputs.urls_mirror2 }}
-          URLS_MIRROR3: ${{ github.event.inputs.urls_mirror3 }}
-          URLS_MIRROR4: ${{ github.event.inputs.urls_mirror4 }}
-          URLS_MIRROR5: ${{ github.event.inputs.urls_mirror5 }}
-          URLS_MIRROR6: ${{ github.event.inputs.urls_mirror6 }}
-          ZIP_PASSWORD: ${{ github.event.inputs.password }}
-          OUTPUT_NAME: ${{ github.event.inputs.output_name }}
+          URLS:           ${{ github.event.inputs.urls }}
+          URLS_MIRROR1:   ${{ github.event.inputs.urls_mirror1 }}
+          URLS_MIRROR2:   ${{ github.event.inputs.urls_mirror2 }}
+          URLS_MIRROR3:   ${{ github.event.inputs.urls_mirror3 }}
+          URLS_MIRROR4:   ${{ github.event.inputs.urls_mirror4 }}
+          URLS_MIRROR5:   ${{ github.event.inputs.urls_mirror5 }}
+          URLS_MIRROR6:   ${{ github.event.inputs.urls_mirror6 }}
+          ZIP_PASSWORD:   ${{ github.event.inputs.password }}
+          OUTPUT_NAME:    ${{ github.event.inputs.output_name }}
           COMPRESSION_LEVEL: ${{ github.event.inputs.compression_level }}
-          REPO_OWNER: ${{ github.repository_owner }}
-          REPO_NAME: ${{ github.event.repository.name }}
-          BRANCH: ${{ github.ref_name }}
+          REPO_OWNER:     ${{ github.repository_owner }}
+          REPO_NAME:      ${{ github.event.repository.name }}
+          BRANCH:         ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
@@ -222,7 +252,7 @@ jobs:
           fi
 
           # Validate timeout
-          TIMEOUT_MINUTES="${{ github.event.inputs.timeout_minutes }}"
+          TIMEOUT_MINUTES=${{ github.event.inputs.timeout_minutes }}
           if ! [[ "${TIMEOUT_MINUTES}" =~ ^[0-9]+$ ]] || \
              [ "${TIMEOUT_MINUTES}" -lt 10 ] || [ "${TIMEOUT_MINUTES}" -gt 360 ]; then
             echo "⚠️  Timeout '${TIMEOUT_MINUTES}' out of range [10–360]. Using 120."
