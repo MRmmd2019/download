@@ -36,7 +36,7 @@
 
 name: DOWNLOADER-2019
 
-on:
+"on":
   workflow_dispatch:
     inputs:
 
@@ -231,7 +231,9 @@ jobs:
             if [ -n "${BACKUP_DIR:-}" ] && [ -d "$BACKUP_DIR" ]; then
               # On failure, keep backup dir for debugging; on success, it's
               # already been copied to DOWNLOAD/ so we can remove it.
+              [ $rc -eq 0 ] && rm -rf "$BACKUP_DIR" || true
             fi
+            rm -f /tmp/backup_dir_path.txt 2>/dev/null || true
             exit $rc
           }
           trap cleanup EXIT ERR INT TERM
@@ -1513,13 +1515,8 @@ jobs:
           content = textwrap.dedent(content)
           with open(path, 'w', encoding='utf-8') as f:
               f.write(content)
-          echo "✅ Persian index README written."
+          print("✅ Persian index README written.")
           PYEOF
-
-          # کپی فایل‌های README به پوشهٔ پشتیبان تا در commit بعدی گنجانده شوند
-          if [ -d "$BACKUP_DIR" ]; then
-            cp -f DOWNLOAD/README.md DOWNLOAD/README_FA.md "$BACKUP_DIR"/ 2>/dev/null || true
-          fi
 
           echo "✅ Index READMEs written."
 
@@ -1533,26 +1530,27 @@ jobs:
 
           echo "🔄 Syncing with remote..."
           git fetch origin "$BRANCH"
-          # جایگزینی reset --hard با ادغام ایمن:
-          git pull --rebase --no-edit origin "$BRANCH" || {
-            echo "⚠️  Could not fast-forward. Using merge..."
-            git pull --no-edit origin "$BRANCH" || true
-          }
+          git reset --hard "origin/$BRANCH"
 
           mkdir -p DOWNLOAD
           cp -r "$BACKUP_DIR"/* DOWNLOAD/ 2>/dev/null || true
-          # اطمینان از اینکه فایل‌های README هم وجود دارند:
-          if [ -f "DOWNLOAD/README.md" ] || [ -f "DOWNLOAD/README_FA.md" ]; then
-            echo "✅ README files already present"
-          else
-            echo "⚠️  README files not found – they will be recreated in the next step"
-          fi
 
           # Collect files: metadata first, then data files
           declare -a ALL_FILES=()
           while IFS= read -r -d '' f; do
             ALL_FILES+=("$f")
-          done < <(find DOWNLOAD -type f -print0 | sort -z)
+          done < <(find DOWNLOAD -type f \
+                    \( -name "README.md" -o -name "README_FA.md" \
+                       -o -name "SHA256SUMS" -o -name "ERROR_REPORT.md" \
+                       -o -name "summary.json" \) \
+                    -print0 | sort -z)
+          while IFS= read -r -d '' f; do
+            ALL_FILES+=("$f")
+          done < <(find DOWNLOAD -type f \
+                    ! -name "README.md" ! -name "README_FA.md" \
+                    ! -name "SHA256SUMS"  ! -name "ERROR_REPORT.md" \
+                    ! -name "summary.json" \
+                    -print0 | sort -z)
 
           TOTAL_FILES="${#ALL_FILES[@]}"
           echo "📁 Files to commit: ${TOTAL_FILES}"
@@ -1564,7 +1562,7 @@ jobs:
 
           push_batch() {
             local -a BATCH=("$@")
-            git add -A DOWNLOAD/ 2>/dev/null || true
+            for f in "${BATCH[@]}"; do git add "$f" 2>/dev/null || true; done
             git diff --cached --quiet && return 0
             git commit -m "[MR.MMD2019 v4.0] Add downloaded files [skip ci]" --quiet
 
