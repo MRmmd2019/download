@@ -233,7 +233,6 @@ jobs:
               # already been copied to DOWNLOAD/ so we can remove it.
               [ $rc -eq 0 ] && rm -rf "$BACKUP_DIR" || true
             fi
-            rm -f /tmp/backup_dir_path.txt 2>/dev/null || true
             exit $rc
           }
           trap cleanup EXIT ERR INT TERM
