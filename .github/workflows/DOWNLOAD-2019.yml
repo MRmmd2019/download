@@ -253,7 +253,7 @@ jobs:
             COMPRESSION_LEVEL=6
           fi
 
-          # Validate timeout (از متغیر محیطی می‌آید، دیگر ${{ }} نداریم)
+          # Validate timeout
           if ! [[ "${TIMEOUT_MINUTES}" =~ ^[0-9]+$ ]] || \
              [ "${TIMEOUT_MINUTES}" -lt 10 ] || [ "${TIMEOUT_MINUTES}" -gt 360 ]; then
             echo "⚠️  Timeout '${TIMEOUT_MINUTES}' out of range [10–360]. Using 120."
@@ -1359,6 +1359,8 @@ jobs:
           echo "📊 Results: ${SUCCESS_FOLDERS} succeeded, ${FAILED_FOLDERS} failed"
 
           # ── Master index README (English) ────────────────────────────────────
+          # FIX: Was a heredoc with col-0 '|' and '>' chars breaking YAML.
+          #      Now written via Python.
           python3 - "DOWNLOAD/README.md" "$SUCCESS_FOLDERS" "$FAILED_FOLDERS" << 'PYEOF'
           import sys, datetime, textwrap
           path, ok, fail = sys.argv[1], sys.argv[2], sys.argv[3]
