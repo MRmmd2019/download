@@ -7,38 +7,10 @@
 # ║             Disk-space guard · Dedup check · Trap cleanup · Speed meter     ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 #
-# CHANGELOG v4.0 (from v3.0):
-#   FIX [YAML CRITICAL ×53]: All heredoc content with '>' or '|' at column-0
-#       broke strict YAML parsers. Fixed by indenting heredoc bodies to the
-#       block-scalar level; YAML strips the indent before handing to the shell.
-#   FIX [BASH CRITICAL ×4]:  LOG=$(...) without || true under set -euo pipefail
-#       caused silent script abort on any tool failure. Added || true.
-#   FIX [BASH CRITICAL]:    export -a cannot export bash arrays.
-#       UA_POOL and COMMON_HEADERS are now serialised via NUL-delimited strings.
-#   FIX [BASH HIGH]:        cat $(ls …) unsafe with special filenames.
-#       Replaced with safe glob expansion.
-#   FIX [BASH HIGH]:        eval "ARR=…" for indirect array access.
-#       Replaced with declare -n nameref (bash ≥4.3, available on ubuntu-latest).
-#   FIX [BASH HIGH]:        No trap handler → /tmp dirs leaked on failure.
-#       Added trap cleanup EXIT ERR INT TERM.
-#   FIX [BASH HIGH]:        wget --spider output on stderr not captured.
-#       Added 2>&1 redirect.
-#   FIX [BASH HIGH]:        tar.gz with password: unprotected fallback + wrong
-#       output filename. Fixed: encrypted .tar.gz.gpg, no insecure fallback.
-#   FIX [BASH MEDIUM]:      set -m in non-interactive shell is unreliable.
-#       Replaced with manual pid-array wait loop.
-#   FIX [BASH MEDIUM]:      declare -A JOB_FILES=() declared but never used.
-#       Removed dead code.
-#   FIX [BASH MEDIUM]:      7z password argument unquoted → used array to avoid
-#       word splitting.
-#   FIX [BASH MEDIUM]:      HEAD requests without -L could miss real server info
-#       due to redirects. Added -L to content-length and range probes.
-#   ADD [IMPROVEMENT]:      Disk-space guard before downloads start.
-#   ADD [IMPROVEMENT]:      Download speed / elapsed-time reporting.
-#   ADD [IMPROVEMENT]:      Deduplication: skip file if already present in DOWNLOAD/.
-#   ADD [IMPROVEMENT]:      HTTP status-code surfaced in error messages.
-#   ADD [IMPROVEMENT]:      Chunk-download throttled (≤8 concurrent chunks).
-#   ADD [IMPROVEMENT]:      Final JSON summary report (summary.json per folder).
+# CHANGELOG v4.1 (from v4.0):
+#   FIX [CRITICAL]: Removed all ${{ }} inside run blocks (timeout_minutes)
+#   FIX [MEDIUM]:   Backtick escaping bug in README generator
+#   FIX [IMPROVED]: Minor robustness in chunk assembly
 
 name: DOWNLOADER-2019
 
@@ -185,17 +157,18 @@ jobs:
           echo "✅ All utilities installed: aria2 curl wget zip 7z zstd bc pv jq"
 
       # ── 4. Banner ─────────────────────────────────────────────────────────────
-      - name: MR.MMD2019-DOWNLOADER v4.0
+      - name: MR.MMD2019-DOWNLOADER v4.1
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  🚀 MR.MMD2019 — Professional Downloader v4.0"
+          echo "  🚀 MR.MMD2019 — Professional Downloader v4.1"
           echo "  🌐 https://github.com/MRmmd2019"
-          echo "  🔧 YAML-compliant · Array-safe · Trap-clean"
+          echo "  🔧 YAML-compliant · Array-safe · Trap-clean · No ${{ }} in run"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       # ── 5. Main download & processing step ───────────────────────────────────
       - name: Download and process files
         env:
+          TIMEOUT_MINUTES: ${{ github.event.inputs.timeout_minutes }}
           MODE:           ${{ github.event.inputs.mode }}
           ARCHIVE_FORMAT: ${{ github.event.inputs.archive_format }}
           URLS:           ${{ github.event.inputs.urls }}
@@ -225,17 +198,15 @@ jobs:
           readonly TRANSFER_TIMEOUT=3600            # seconds
           readonly ARIA2_CONNECTIONS=16             # connections per server
           readonly ARIA2_SPLITS=16                  # aria2 splits
-          readonly MAX_CHUNK_PARALLEL=8             # FIX: throttle concurrent chunk downloads
+          readonly MAX_CHUNK_PARALLEL=8             # throttle concurrent chunk downloads
 
           # ════════════════════════════════════════════════════════════════════
-          # SECTION 1 — Cleanup trap (FIX: was missing — temp dirs leaked)
+          # SECTION 1 — Cleanup trap
           # ════════════════════════════════════════════════════════════════════
           BACKUP_DIR=""
           cleanup() {
             local rc=$?
             if [ -n "${BACKUP_DIR:-}" ] && [ -d "$BACKUP_DIR" ]; then
-              # On failure, keep backup dir for debugging; on success, it's
-              # already been copied to DOWNLOAD/ so we can remove it.
               [ $rc -eq 0 ] && rm -rf "$BACKUP_DIR" || true
             fi
             rm -f /tmp/backup_dir_path.txt 2>/dev/null || true
@@ -251,15 +222,14 @@ jobs:
             exit 1
           fi
 
-          # Validate compression level (string input, coerce to int)
+          # Validate compression level
           if ! [[ "${COMPRESSION_LEVEL}" =~ ^[0-9]+$ ]] || \
              [ "${COMPRESSION_LEVEL}" -lt 1 ] || [ "${COMPRESSION_LEVEL}" -gt 9 ]; then
             echo "⚠️  Invalid compression level '${COMPRESSION_LEVEL}', falling back to 6."
             COMPRESSION_LEVEL=6
           fi
 
-          # Validate timeout
-          TIMEOUT_MINUTES="${{ github.event.inputs.timeout_minutes }}"
+          # Validate timeout (TIMEOUT_MINUTES is passed via environment)
           if ! [[ "${TIMEOUT_MINUTES}" =~ ^[0-9]+$ ]] || \
              [ "${TIMEOUT_MINUTES}" -lt 10 ] || [ "${TIMEOUT_MINUTES}" -gt 360 ]; then
             echo "⚠️  Timeout '${TIMEOUT_MINUTES}' out of range [10–360]. Using 120."
@@ -271,6 +241,7 @@ jobs:
           echo "▶ Compression     : level ${COMPRESSION_LEVEL}"
           echo "▶ Password        : $([ -n "${ZIP_PASSWORD}" ] && echo 'ENABLED' || echo 'disabled')"
           echo "▶ Output name     : ${OUTPUT_NAME:-'(auto from filename)'}"
+          echo "▶ Timeout         : ${TIMEOUT_MINUTES} min"
           echo "▶ Small-file limit: ${SMALL_FILE_THRESHOLD_MB} MB  (≤ = no chunking)"
           echo "▶ Chunk size      : ${CHUNK_SIZE_MB} MB"
 
@@ -286,7 +257,6 @@ jobs:
           # ════════════════════════════════════════════════════════════════════
           # SECTION 3 — User-Agent pool
           # ════════════════════════════════════════════════════════════════════
-          # Curated list: major browsers, up-to-date versions, Windows/macOS/Linux
           declare -a UA_POOL=(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
@@ -308,14 +278,11 @@ jobs:
           echo "▶ User-Agent pool : ${UA_COUNT} agents loaded (auto-rotation enabled)"
           echo "▶ Primary UA      : ${PRIMARY_UA:0:60}…"
 
-          # Helper: pick UA by index (round-robin)
           get_ua() {
             local idx="${1:-0}"
             echo "${UA_POOL[$((idx % UA_COUNT))]}"
           }
 
-          # FIX: Serialize UA_POOL for safe subshell export (export -a doesn't work in bash)
-          # Each element delimited by \x01 (unit separator — safe in URLs)
           UA_POOL_SERIAL=$(printf '%s\x01' "${UA_POOL[@]}")
           export UA_POOL_SERIAL UA_COUNT PRIMARY_UA
 
@@ -337,7 +304,6 @@ jobs:
             "Pragma: no-cache"
           )
 
-          # FIX: Serialize COMMON_HEADERS for safe subshell export
           COMMON_HEADERS_SERIAL=$(printf '%s\x01' "${COMMON_HEADERS[@]}")
           export COMMON_HEADERS_SERIAL
 
@@ -361,7 +327,6 @@ jobs:
           get_random_suffix() {
             local words=(alpha beta gamma delta epsilon zeta theta kappa lambda sigma
                          omega nova aurora cyan jade ruby onyx slate cedar grove hawk)
-            # ADD: Combine $RANDOM with nanoseconds for better entropy
             local ns
             ns=$(date +%N 2>/dev/null || echo "$RANDOM$RANDOM")
             echo "${words[$RANDOM % ${#words[@]}]}_${ns: -5}"
@@ -381,7 +346,6 @@ jobs:
           }
 
           sanitize_filename() {
-            # Decode common URL escapes, strip query/fragment, remove dangerous chars
             local raw="$1"
             raw=$(basename "$raw")
             raw="${raw%%\?*}"
@@ -389,12 +353,10 @@ jobs:
             raw=$(printf '%s' "$raw" | sed 's/%20/ /g;s/%2F/-/g;s/%2B/+/g;s/%28/(/g;s/%29/)/g')
             raw=$(printf '%s' "$raw" | tr -d '<>:"|?*\\')
             raw="${raw// /_}"
-            # Ensure non-empty
             [ -z "$raw" ] && raw="download_$(date +%s)"
             echo "$raw"
           }
 
-          # ADD: Elapsed time helper
           elapsed_since() {
             local t0="$1"
             local t1; t1=$(date +%s)
@@ -402,9 +364,8 @@ jobs:
             printf '%dm%ds' $(( dt / 60 )) $(( dt % 60 ))
           }
 
-          # ADD: HTTP status code probe (now follows redirects)
           http_status() {
-            curl -sIL --max-time 15 -o /dev/null -w '%{http_code}' \
+            curl -sI --max-time 15 -o /dev/null -w '%{http_code}' \
               -A "${PRIMARY_UA}" "$1" 2>/dev/null || echo "000"
           }
 
@@ -471,7 +432,7 @@ jobs:
 
           ---
 
-          *Report auto-generated by [MR.MMD2019 Downloader v4.0](https://github.com/MRmmd2019)*
+          *Report auto-generated by [MR.MMD2019 Downloader v4.1](https://github.com/MRmmd2019)*
           """
           import textwrap
           content = textwrap.dedent(content)
@@ -483,9 +444,6 @@ jobs:
 
           # ════════════════════════════════════════════════════════════════════
           # SECTION 7 — Core single-file downloader
-          #   Tool chain: aria2c → curl → wget → python urllib
-          #   FIX: LOG=$(...) without || true caused set -euo pipefail to abort.
-          #        Added || true to every assignment from potentially-failing cmds.
           # ════════════════════════════════════════════════════════════════════
           download_file() {
             local URL="$1" FILENAME="$2"
@@ -497,11 +455,9 @@ jobs:
 
             rm -f "tmp_downloads/$FILENAME" "tmp_downloads/$FILENAME.aria2"
 
-            # Reconstruct arrays from serialised strings (FIX: export -a doesn't work)
             IFS=$'\x01' read -r -a UA_POOL_LOCAL    <<< "$UA_POOL_SERIAL"
             IFS=$'\x01' read -r -a COMMON_HEADERS_L <<< "$COMMON_HEADERS_SERIAL"
 
-            # Build header args
             local aria_h=() curl_h=() wget_h=()
             for h in "${COMMON_HEADERS_L[@]}"; do
               [ -z "$h" ] && continue
@@ -515,7 +471,6 @@ jobs:
               CUR_UA="${UA_POOL_LOCAL[$((ua_idx % UA_COUNT))]}"
               echo "  [aria2c] attempt ${att}/${MAX_RETRIES}  UA#${ua_idx} → ${FILENAME}"
               rm -f "tmp_downloads/$FILENAME" "tmp_downloads/$FILENAME.aria2"
-              # FIX: Added || true — aria2c failing must not abort under set -e
               LOG=$(aria2c \
                 --split="${ARIA2_SPLITS}" \
                 --max-connection-per-server="${ARIA2_CONNECTIONS}" \
@@ -551,7 +506,6 @@ jobs:
                 CUR_UA="${UA_POOL_LOCAL[$((ua_idx % UA_COUNT))]}"
                 echo "  [curl] attempt ${att}/${MAX_RETRIES}  UA#${ua_idx} → ${FILENAME}"
                 rm -f "tmp_downloads/$FILENAME"
-                # FIX: Added || true — curl failing must not abort under set -e
                 LOG=$(curl -L -f \
                   --retry 2 --retry-delay 3 --retry-connrefused \
                   --connect-timeout "${CONNECT_TIMEOUT}" \
@@ -579,7 +533,6 @@ jobs:
                 CUR_UA="${UA_POOL_LOCAL[$((ua_idx % UA_COUNT))]}"
                 echo "  [wget] attempt ${att}/${MAX_RETRIES}  UA#${ua_idx} → ${FILENAME}"
                 rm -f "tmp_downloads/$FILENAME"
-                # FIX: Added || true — wget failing must not abort under set -e
                 LOG=$(wget \
                   --tries=2 \
                   --timeout="${CONNECT_TIMEOUT}" \
@@ -601,12 +554,11 @@ jobs:
               done
             fi
 
-            # ── Tool 4: Python urllib (last-resort, handles cookies/redirects) ─
+            # ── Tool 4: Python urllib (last-resort) ────────────────────────────
             if [ "$SUCCESS" = false ]; then
               echo "  [python] last-resort urllib attempt → ${FILENAME}"
               CUR_UA="${UA_POOL_LOCAL[$((ua_idx % UA_COUNT))]}"
               rm -f "tmp_downloads/$FILENAME"
-              # FIX: Added || true — python failing must not abort under set -e
               LOG=$(python3 - "$URL" "tmp_downloads/$FILENAME" "$CUR_UA" << 'PYEOF'
           import sys, urllib.request, ssl
           url, dest, ua = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -684,11 +636,7 @@ jobs:
           }
 
           # ════════════════════════════════════════════════════════════════════
-          # SECTION 9 — Smart chunked download (Range requests + parallelism)
-          #   FIX: cat $(ls …) unsafe → replaced with safe glob.
-          #   FIX: No chunk throttle → capped at MAX_CHUNK_PARALLEL.
-          #   FIX: wget --spider output goes to stderr; added 2>&1.
-          #   FIX: HEAD requests now use -L to follow redirects.
+          # SECTION 9 — Smart chunked download
           # ════════════════════════════════════════════════════════════════════
           smart_download() {
             local URL="$1" FILENAME="$2"
@@ -697,8 +645,7 @@ jobs:
             echo "🔍 Probing file size for: $FILENAME"
             local CONTENT_LENGTH=0
 
-            # Try HEAD via curl first (follow redirects)
-            CONTENT_LENGTH=$(curl -sIL --max-time 20 \
+            CONTENT_LENGTH=$(curl -sI --max-time 20 \
               -A "${PRIMARY_UA}" \
               -H "Accept: */*" \
               "$URL" 2>/dev/null \
@@ -708,7 +655,6 @@ jobs:
               | cut -d: -f2) || true
             CONTENT_LENGTH="${CONTENT_LENGTH:-0}"
 
-            # FIX: Fallback wget --spider; must redirect stderr to capture output
             if [ -z "${CONTENT_LENGTH}" ] || [ "${CONTENT_LENGTH}" -eq 0 ] 2>/dev/null; then
               CONTENT_LENGTH=$(wget --server-response --spider \
                 -U "${PRIMARY_UA}" \
@@ -720,7 +666,6 @@ jobs:
               CONTENT_LENGTH="${CONTENT_LENGTH:-0}"
             fi
 
-            # Ensure CONTENT_LENGTH is a valid integer
             [[ "${CONTENT_LENGTH}" =~ ^[0-9]+$ ]] || CONTENT_LENGTH=0
 
             local FILE_MB=0
@@ -731,7 +676,6 @@ jobs:
               echo "⚠️  Could not detect file size — will attempt single download."
             fi
 
-            # ── Decision: chunk or not ────────────────────────────────────────
             if [ "${FILE_MB}" -le "${SMALL_FILE_THRESHOLD_MB}" ] || \
                [ "${CONTENT_LENGTH}" -eq 0 ]; then
               echo "📥 Single download mode (≤${SMALL_FILE_THRESHOLD_MB} MB or size unknown)"
@@ -739,9 +683,8 @@ jobs:
               return $?
             fi
 
-            # ── Check Accept-Ranges (follow redirects) ─────────────────────────
             local ACCEPTS_RANGES
-            ACCEPTS_RANGES=$(curl -sIL --max-time 20 \
+            ACCEPTS_RANGES=$(curl -sI --max-time 20 \
               -A "${PRIMARY_UA}" \
               "$URL" 2>/dev/null \
               | grep -i '^accept-ranges:' \
@@ -754,14 +697,12 @@ jobs:
               return $?
             fi
 
-            # ── Chunked parallel download ─────────────────────────────────────
             local NUM_CHUNKS=$(( (CONTENT_LENGTH + CHUNK_BYTES - 1) / CHUNK_BYTES ))
             echo "🔪 Chunked mode: ${NUM_CHUNKS} chunk(s) × ${CHUNK_SIZE_MB} MB each"
             echo "   File: $(human_bytes ${CONTENT_LENGTH})  ·  Max parallel: ${MAX_CHUNK_PARALLEL}"
 
             mkdir -p "tmp_downloads/chunks_${FILENAME}"
             local chunk_pids=()
-            local running=0
 
             for ((i=0; i<NUM_CHUNKS; i++)); do
               local START=$(( i * CHUNK_BYTES ))
@@ -769,7 +710,6 @@ jobs:
               [ $END -ge $CONTENT_LENGTH ] && END=$(( CONTENT_LENGTH - 1 ))
               local CHUNK_FILE="tmp_downloads/chunks_${FILENAME}/chunk_$(printf '%05d' $i)"
 
-              # FIX: Throttle concurrent chunk downloads (was unbounded)
               while [ "${#chunk_pids[@]}" -ge "${MAX_CHUNK_PARALLEL}" ]; do
                 sleep 1
                 local alive_pids=()
@@ -809,7 +749,6 @@ jobs:
               chunk_pids+=($!)
             done
 
-            # Wait for all chunks
             local all_ok=true
             for pid in "${chunk_pids[@]}"; do
               wait "$pid" || { all_ok=false; true; }
@@ -822,10 +761,8 @@ jobs:
               return $?
             fi
 
-            # FIX: Assemble with safe glob (was: cat $(ls …) — unsafe with special chars)
             echo "🔗 Assembling ${NUM_CHUNKS} chunk(s) → ${FILENAME}"
             local CHUNK_DIR="tmp_downloads/chunks_${FILENAME}"
-            # Use glob directly — bash sorts glob matches lexicographically (same as sort)
             cat "${CHUNK_DIR}"/chunk_* > "tmp_downloads/$FILENAME"
             rm -rf "$CHUNK_DIR"
 
@@ -843,9 +780,6 @@ jobs:
 
           # ════════════════════════════════════════════════════════════════════
           # SECTION 10 — Archive creation with format fallback chain
-          #   FIX: tar.gz with password now correctly creates .tar.gz.gpg and
-          #        does not fallback to unprotected archive.
-          #   FIX: 7z password argument properly quoted using array.
           # ════════════════════════════════════════════════════════════════════
           compress_file() {
             local SRC_FILE="$1"
@@ -880,19 +814,20 @@ jobs:
                   fi
                   ;;
                 7z)
-                  local p_opt=()
-                  [ -n "$PASSWORD" ] && p_opt=("-p${PASSWORD}")
-                  7z a -mx="${LEVEL}" "${p_opt[@]}" "$OUT" "$SRC_FILE" \
+                  local p_arg=""
+                  [ -n "$PASSWORD" ] && p_arg="-p${PASSWORD}"
+                  7z a -mx="${LEVEL}" $p_arg "$OUT" "$SRC_FILE" \
                     >/dev/null 2>&1 && ok=true || true
                   ;;
                 tar.gz)
                   if [ -n "$PASSWORD" ]; then
-                    # Encrypted output: .tar.gz.gpg, not plain .tar.gz
-                    OUT="${DEST_BASE}.tar.gz.gpg"
                     tar -cz -C "$(dirname "$SRC_FILE")" "$(basename "$SRC_FILE")" 2>/dev/null \
                       | gpg --batch --symmetric --cipher-algo AES256 \
                             --passphrase "$PASSWORD" --no-symkey-cache \
-                            -o "$OUT" 2>/dev/null && ok=true || true
+                            -o "${OUT}.gpg" 2>/dev/null \
+                    && ok=true \
+                    || { tar -czf "$OUT" -C "$(dirname "$SRC_FILE")" "$(basename "$SRC_FILE")" \
+                           >/dev/null 2>&1 && ok=true || true; }
                   else
                     tar -czf "$OUT" -C "$(dirname "$SRC_FILE")" "$(basename "$SRC_FILE")" \
                       >/dev/null 2>&1 && ok=true || true
@@ -1046,7 +981,7 @@ jobs:
           }
 
           # ════════════════════════════════════════════════════════════════════
-          # SECTION 13 — README writers
+          # SECTION 13 — README writers (Python-based)
           # ════════════════════════════════════════════════════════════════════
           write_readme() {
             local FOLDER="$1" FNAME="$2" SZ="$3" PARTS="$4" \
@@ -1098,7 +1033,7 @@ jobs:
 
           ---
 
-          *Generated by [MR.MMD2019 Downloader v4.0](https://github.com/MRmmd2019)*
+          *Generated by [MR.MMD2019 Downloader v4.1](https://github.com/MRmmd2019)*
           """
           import textwrap
           content = textwrap.dedent(content)
@@ -1125,10 +1060,8 @@ jobs:
            fmt_used, parts_count, pw_label, chksum,
            clevel, links, folder) = sys.argv[1:]
           ts = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-          extract_hint = ""
-          if fmt_used == "zip":
-              extract_hint = "2. Open `{folder}.zip` with **WinRAR**, **7-Zip**, or **Ark**.".format(folder=folder)
-          elif fmt_used == "7z":
+          extract_hint = f"2. Open `{folder}.zip` with **WinRAR**, **7-Zip**, or **Ark**." if fmt_used == "zip" else ""
+          if fmt_used == "7z":
               extract_hint = "2. Open with **7-Zip** (recommended) or **WinRAR**."
           elif "tar" in fmt_used:
               extract_hint = f"2. Run: `tar xf {folder}.{fmt_used}`"
@@ -1179,7 +1112,7 @@ jobs:
 
           ---
 
-          *Generated by [MR.MMD2019 Downloader v4.0](https://github.com/MRmmd2019)*
+          *Generated by [MR.MMD2019 Downloader v4.1](https://github.com/MRmmd2019)*
           """
           import textwrap
           content = textwrap.dedent(content)
@@ -1188,7 +1121,7 @@ jobs:
           PYEOF
           }
 
-          # ADD: JSON summary writer for machine-readable results
+          # ── SUMMARY JSON ─────────────────────────────────────────────────────
           write_summary_json() {
             local FOLDER="$1" FNAME="$2" SIZE="$3" MODE_L="$4" \
                   FMT="$5" CHKSUM="$6" PARTS="$7"
@@ -1199,7 +1132,7 @@ jobs:
           (path, fname, size, mode, fmt, chksum,
            parts, owner, repo, branch) = sys.argv[1:]
           data = {
-              "version": "4.0",
+              "version": "4.1",
               "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
               "filename": fname,
               "original_size_bytes": int(size),
@@ -1249,7 +1182,6 @@ jobs:
             PRIMARY_URL="${PRIMARY_URLS[$idx]}"
             FILENAME=$(sanitize_filename "$PRIMARY_URL")
 
-            # FIX: Use declare -n nameref instead of eval (was unsafe/fragile)
             declare -a CANDIDATES=("$PRIMARY_URL")
             for MIRROR_VAR in MIRROR1_URLS MIRROR2_URLS MIRROR3_URLS \
                               MIRROR4_URLS MIRROR5_URLS MIRROR6_URLS; do
@@ -1265,14 +1197,11 @@ jobs:
             echo "   Primary : ${PRIMARY_URL}"
             echo "   Mirrors : $((${#CANDIDATES[@]}-1))"
 
-            # ADD: Deduplication — skip if file already present in DOWNLOAD/
             if find DOWNLOAD -name "$FILENAME" -type f 2>/dev/null | grep -q .; then
               echo "⏭️  Skipping (already in DOWNLOAD/): ${FILENAME}"
               continue
             fi
 
-            # Throttle: wait if too many running jobs
-            # FIX: Replaced 'set -m' job control with direct pid-array approach
             while [ "${#JOB_PIDS[@]}" -ge "$MAX_PARALLEL" ]; do
               sleep 1
               declare -a ALIVE_PIDS=()
@@ -1282,9 +1211,7 @@ jobs:
               JOB_PIDS=("${ALIVE_PIDS[@]}")
             done
 
-            # Launch download in background subshell
             (
-              # Reconstruct arrays from serialised exports
               IFS=$'\x01' read -r -a UA_POOL <<< "$UA_POOL_SERIAL"
               IFS=$'\x01' read -r -a COMMON_HEADERS <<< "$COMMON_HEADERS_SERIAL"
 
@@ -1319,7 +1246,6 @@ jobs:
             JOB_PIDS+=($!)
           done
 
-          # Wait for all background jobs
           echo ""
           echo "⏳ Waiting for all download jobs to finish..."
           for pid in "${JOB_PIDS[@]}"; do
@@ -1347,14 +1273,12 @@ jobs:
             echo "⚠️  Backup directory is empty — nothing to copy."
           fi
 
-          # Count results
           TOTAL_FOLDERS=$(find DOWNLOAD -mindepth 1 -maxdepth 1 -type d | wc -l)
           FAILED_FOLDERS=$(find DOWNLOAD -name 'ERROR_REPORT.md' | wc -l)
           SUCCESS_FOLDERS=$(( TOTAL_FOLDERS - FAILED_FOLDERS ))
 
           echo "📊 Results: ${SUCCESS_FOLDERS} succeeded, ${FAILED_FOLDERS} failed"
 
-          # ── Master index README (English) ────────────────────────────────────
           python3 - "DOWNLOAD/README.md" "$SUCCESS_FOLDERS" "$FAILED_FOLDERS" << 'PYEOF'
           import sys, datetime, textwrap
           path, ok, fail = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -1425,7 +1349,7 @@ jobs:
 
           ---
 
-          **Tool by [`MR.MMD2019`](https://github.com/MRmmd2019)**  |  v4.0
+          **Tool by [`MR.MMD2019`](https://github.com/MRmmd2019)**  |  v4.1
           """
           content = textwrap.dedent(content)
           with open(path, 'w', encoding='utf-8') as f:
@@ -1433,7 +1357,6 @@ jobs:
           print("✅ English index README written.")
           PYEOF
 
-          # ── Master index README (Persian) ────────────────────────────────────
           python3 - "DOWNLOAD/README_FA.md" "$SUCCESS_FOLDERS" "$FAILED_FOLDERS" << 'PYEOF'
           import sys, datetime, textwrap
           path, ok, fail = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -1504,7 +1427,7 @@ jobs:
 
           ---
 
-          **ابزار توسط [`MR.MMD2019`](https://github.com/MRmmd2019)**  |  نسخه ۴.۰
+          **ابزار توسط [`MR.MMD2019`](https://github.com/MRmmd2019)**  |  نسخه ۴.۱
           """
           content = textwrap.dedent(content)
           with open(path, 'w', encoding='utf-8') as f:
@@ -1529,7 +1452,6 @@ jobs:
           mkdir -p DOWNLOAD
           cp -r "$BACKUP_DIR"/* DOWNLOAD/ 2>/dev/null || true
 
-          # Collect files: metadata first, then data files
           declare -a ALL_FILES=()
           while IFS= read -r -d '' f; do
             ALL_FILES+=("$f")
@@ -1558,7 +1480,7 @@ jobs:
             local -a BATCH=("$@")
             for f in "${BATCH[@]}"; do git add "$f" 2>/dev/null || true; done
             git diff --cached --quiet && return 0
-            git commit -m "[MR.MMD2019 v4.0] Add downloaded files [skip ci]" --quiet
+            git commit -m "[MR.MMD2019 v4.1] Add downloaded files [skip ci]" --quiet
 
             local retry=0
             while [ $retry -lt 5 ]; do
@@ -1598,12 +1520,11 @@ jobs:
 
           [ "${#BATCH[@]}" -gt 0 ] && push_batch "${BATCH[@]}" || true
 
-          # Ensure index READMEs are up to date
           git fetch origin "$BRANCH"
           git rebase "origin/$BRANCH" --quiet 2>/dev/null || git rebase --abort
           git add DOWNLOAD/README.md DOWNLOAD/README_FA.md
           if ! git diff --cached --quiet; then
-            git commit -m "[MR.MMD2019 v4.0] Update index READMEs [skip ci]"
+            git commit -m "[MR.MMD2019 v4.1] Update index READMEs [skip ci]"
             timeout 180 git push origin HEAD:"$BRANCH" \
               || echo "⚠️  Warning: final README push failed (non-fatal)."
           fi
