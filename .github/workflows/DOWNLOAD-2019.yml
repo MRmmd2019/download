@@ -231,7 +231,6 @@ jobs:
             if [ -n "${BACKUP_DIR:-}" ] && [ -d "$BACKUP_DIR" ]; then
               # On failure, keep backup dir for debugging; on success, it's
               # already been copied to DOWNLOAD/ so we can remove it.
-              [ $rc -eq 0 ] && rm -rf "$BACKUP_DIR" || true
             fi
             exit $rc
           }
