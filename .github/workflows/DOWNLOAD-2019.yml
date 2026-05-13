@@ -4,35 +4,7 @@
 # ║   Features: Smart splitting · Multi-format archive · UA rotation            ║
 # ║             Parallel download · Full fallback chain · Rich reporting        ║
 # ║             Disk-space guard · Dedup check · Trap cleanup · Speed meter     ║
-# ╚══════════════════════════════════════════════════════════════════════════════╝
-#
-# CHANGELOG v4.0 (from v3.0):
-#   FIX [YAML CRITICAL ×53]: All heredoc content with '>' or '|' at column-0
-#       broke strict YAML parsers. Fixed by indenting heredoc bodies to the
-#       block-scalar level; YAML strips the indent before handing to the shell.
-#   FIX [BASH CRITICAL ×4]:  LOG=$(...) without || true under set -euo pipefail
-#       caused silent script abort on any tool failure. Added || true.
-#   FIX [BASH CRITICAL]:    export -a cannot export bash arrays.
-#       UA_POOL and COMMON_HEADERS are now serialised via NUL-delimited strings.
-#   FIX [BASH HIGH]:        cat $(ls …) unsafe with special filenames.
-#       Replaced with safe glob expansion.
-#   FIX [BASH HIGH]:        eval "ARR=…" for indirect array access.
-#       Replaced with declare -n nameref (bash ≥4.3, available on ubuntu-latest).
-#   FIX [BASH HIGH]:        No trap handler → /tmp dirs leaked on failure.
-#       Added trap cleanup EXIT ERR INT TERM.
-#   FIX [BASH HIGH]:        wget --spider output on stderr not captured.
-#       Added 2>&1 redirect.
-#   FIX [BASH MEDIUM]:      set -m in non-interactive shell is unreliable.
-#       Replaced with manual pid-array wait loop.
-#   FIX [BASH MEDIUM]:      declare -A JOB_FILES=() declared but never used.
-#       Removed dead code.
-#   ADD [IMPROVEMENT]:      Disk-space guard before downloads start.
-#   ADD [IMPROVEMENT]:      Download speed / elapsed-time reporting.
-#   ADD [IMPROVEMENT]:      Deduplication: skip file if already present in DOWNLOAD/.
-#   ADD [IMPROVEMENT]:      HTTP status-code surfaced in error messages.
-#   ADD [IMPROVEMENT]:      Chunk-download throttled (≤8 concurrent chunks).
-#   ADD [IMPROVEMENT]:      Final JSON summary report (summary.json per folder).
-
+# ╚══════════════════════════════════════════════════════════════════════════════
 name: DOWNLOADER-2019
 
 on:
