@@ -1,1405 +1,908 @@
 ---
-# ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║              MR.MMD2019 — PROFESSIONAL DOWNLOADER v3.0                      ║
-# ║   GitHub: https://github.com/MRmmd2019                                      ║
-# ║   Features: Smart splitting · Multi-format archive · UA rotation            ║
-# ║             Parallel download · Full fallback chain · Rich reporting        ║
-# ╚══════════════════════════════════════════════════════════════════════════════╝
-
 name: DOWNLOADER-2019
 
 on:
   workflow_dispatch:
     inputs:
-
-      # ── URLs ──────────────────────────────────────────────────────────────────
       urls:
-        description: 'URLs (space-separated) — primary download sources'
+        description: 'Space-separated list of URLs to download'
         required: true
         type: string
-
-      urls_mirror1:
-        description: 'Mirror 1 — fallback URLs (space-separated, same order as primary)'
-        required: false
-        default: ''
-        type: string
-
-      urls_mirror2:
-        description: 'Mirror 2 — fallback URLs (space-separated, same order as primary)'
-        required: false
-        default: ''
-        type: string
-
-      urls_mirror3:
-        description: 'Mirror 3 — fallback URLs (space-separated, same order as primary)'
-        required: false
-        default: ''
-        type: string
-
-      urls_mirror4:
-        description: 'Mirror 4 — fallback URLs (space-separated, same order as primary)'
-        required: false
-        default: ''
-        type: string
-
-      urls_mirror5:
-        description: 'Mirror 5 — fallback URLs (space-separated, same order as primary)'
-        required: false
-        default: ''
-        type: string
-
-      urls_mirror6:
-        description: 'Mirror 6 — fallback URLs (space-separated, same order as primary)'
-        required: false
-        default: ''
-        type: string
-
-      # ── Download Mode ────────────────────────────────────────────────────────
       mode:
-        description: 'normal = save file as-is | zip = compress into archive'
+        description: 'Download mode'
         required: false
         default: 'normal'
         type: choice
         options:
           - normal
           - zip
-
-      # ── Archive Format (ZIP mode only) ───────────────────────────────────────
-      archive_format:
-        description: |
-          Archive format (ZIP mode only). First choice is primary; others become fallbacks.
-          Formats tried in order: selected → zip → 7z → tar.gz → tar.bz2 → tar.xz
-        required: false
-        default: 'zip'
-        type: choice
-        options:
-          - zip
-          - 7z
-          - tar.gz
-          - tar.bz2
-          - tar.xz
-          - tar.zst
-
-      # ── Archive Options ──────────────────────────────────────────────────────
       password:
-        description: 'Password to protect the archive (optional, ZIP mode only)'
+        description: 'Password for zip files (optional)'
         required: false
         default: ''
         type: string
-
+      split_parts:
+        description: 'Number of parts to split into (1-1000). 1 = no split. Ignored if max_part_size_mb > 0'
+        required: false
+        default: 1
+        type: number
+      max_part_size_mb:
+        description: 'Max size per part (MB). 0 = use split_parts instead'
+        required: false
+        default: 0
+        type: number
+      timeout_minutes:
+        description: 'Job timeout in minutes'
+        required: false
+        default: 120
+        type: number
+      parallel_downloads:
+        description: 'Maximum concurrent downloads'
+        required: false
+        default: 3
+        type: number
+      user_agent:
+        description: 'Custom User-Agent (leave empty for Chrome 125 default)'
+        required: false
+        default: ''
+        type: string
+      keep_original:
+        description: 'Keep original file without zipping (no archive)'
+        required: false
+        default: false
+        type: boolean
+      output_name:
+        description: 'Custom output file/folder name (leave empty to keep original name)'
+        required: false
+        default: ''
+        type: string
       compression_level:
-        description: 'Compression level (1 = fastest / largest  ·  9 = slowest / smallest)'
+        description: 'Zip compression level (1-9)'
         required: false
         default: 6
         type: number
 
-      # ── Output ───────────────────────────────────────────────────────────────
-      output_name:
-        description: 'Custom output name — leave empty to keep original filename'
-        required: false
-        default: ''
-        type: string
-
-      # ── Timeout ──────────────────────────────────────────────────────────────
-      timeout_minutes:
-        description: 'Maximum job runtime in minutes (10–360)'
-        required: false
-        default: 120
-        type: number
-
-# ──────────────────────────────────────────────────────────────────────────────
 jobs:
   save-file:
     runs-on: ubuntu-latest
     timeout-minutes: ${{ fromJSON(github.event.inputs.timeout_minutes) }}
     permissions:
       contents: write
-
     steps:
-
-      # ── 1. Checkout ──────────────────────────────────────────────────────────
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      # ── 2. Git large-file tuning ─────────────────────────────────────────────
-      - name: Configure Git for large-file handling
+      - name: Configure Git for Large Files
         run: |
-          git config --global http.postBuffer     524288000
+          git config --global http.postBuffer 524288000
           git config --global http.maxRequestBuffer 100M
-          git config --global core.compression    0
-          git config --global pack.windowMemory   256m
-          git config --global pack.packSizeLimit  100m
-          git config --global pack.threads        1
-          git config user.name  "github-actions"
+          git config --global core.compression 0
+          git config --global pack.windowMemory 256m
+          git config --global pack.packSizeLimit 100m
+          git config --global pack.threads 1
+          git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          echo "✅ Git configured for large-file handling."
+          echo "Git configured for large file handling"
 
-      # ── 3. Install tools ─────────────────────────────────────────────────────
-      - name: Install download & archive utilities
+      - name: Install aria2, wget, zip and utilities
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y \
-            aria2 curl wget \
-            zip unzip \
-            p7zip-full \
-            zstd \
-            bc pv
-          echo "✅ All utilities installed: aria2 curl wget zip 7z zstd bc pv"
+          sudo apt-get update
+          sudo apt-get install -y aria2 zip curl wget bc
 
-      # ── 4. Banner ────────────────────────────────────────────────────────────
-      - name: MR.MMD2019-DOWNLOADER v3.0
+      - name: MR.MMD2019-DOWNLOADER
         run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  🚀 MR.MMD2019 — Professional Downloader v3.0"
-          echo "  🌐 https://github.com/MRmmd2019"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🏷️  MR.MMD2019 - Fast, simple, stable"
+          echo "🌐 https://github.com/MRmmd2019"
+          echo ""
 
-      # ── 5. Main download & processing step ──────────────────────────────────
-      - name: Download and process files
+      - name: Download files
         env:
-          MODE:           ${{ github.event.inputs.mode }}
-          ARCHIVE_FORMAT: ${{ github.event.inputs.archive_format }}
-          URLS:           ${{ github.event.inputs.urls }}
-          URLS_MIRROR1:   ${{ github.event.inputs.urls_mirror1 }}
-          URLS_MIRROR2:   ${{ github.event.inputs.urls_mirror2 }}
-          URLS_MIRROR3:   ${{ github.event.inputs.urls_mirror3 }}
-          URLS_MIRROR4:   ${{ github.event.inputs.urls_mirror4 }}
-          URLS_MIRROR5:   ${{ github.event.inputs.urls_mirror5 }}
-          URLS_MIRROR6:   ${{ github.event.inputs.urls_mirror6 }}
-          ZIP_PASSWORD:   ${{ github.event.inputs.password }}
-          OUTPUT_NAME:    ${{ github.event.inputs.output_name }}
+          MODE: ${{ github.event.inputs.mode }}
+          URLS: ${{ github.event.inputs.urls }}
+          ZIP_PASSWORD: ${{ github.event.inputs.password }}
+          SPLIT_PARTS: ${{ github.event.inputs.split_parts }}
+          MAX_PART_SIZE_MB: ${{ github.event.inputs.max_part_size_mb }}
+          MAX_PARALLEL: ${{ github.event.inputs.parallel_downloads }}
+          USER_AGENT_INPUT: ${{ github.event.inputs.user_agent }}
+          KEEP_ORIGINAL: ${{ github.event.inputs.keep_original }}
+          OUTPUT_NAME: ${{ github.event.inputs.output_name }}
           COMPRESSION_LEVEL: ${{ github.event.inputs.compression_level }}
-          REPO_OWNER:     ${{ github.repository_owner }}
-          REPO_NAME:      ${{ github.event.repository.name }}
-          BRANCH:         ${{ github.ref_name }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          BRANCH: ${{ github.ref_name }}
         run: |
-          set -euo pipefail
+          # ── دریافت مقادیر از env ──
+          MODE="${MODE}"
+          URLS="${URLS}"
+          ZIP_PASSWORD="${ZIP_PASSWORD}"
+          SPLIT_PARTS="${SPLIT_PARTS}"
+          MAX_PART_SIZE_MB="${MAX_PART_SIZE_MB}"
+          MAX_PARALLEL="${MAX_PARALLEL}"
+          USER_AGENT_INPUT="${USER_AGENT_INPUT}"
+          KEEP_ORIGINAL="${KEEP_ORIGINAL}"
+          OUTPUT_NAME="${OUTPUT_NAME}"
+          COMPRESSION_LEVEL="${COMPRESSION_LEVEL}"
+          REPO_OWNER="${REPO_OWNER}"
+          REPO_NAME="${REPO_NAME}"
+          BRANCH="${BRANCH}"
 
-          # ════════════════════════════════════════════════════════════════════
-          # SECTION 0 — Constants & thresholds
-          # ════════════════════════════════════════════════════════════════════
-          readonly SMALL_FILE_THRESHOLD_MB=90       # files ≤ 90 MB → single download
-          readonly CHUNK_SIZE_MB=95                 # chunk target for large files
-          readonly CHUNK_BYTES=$((CHUNK_SIZE_MB * 1048576))
-          readonly MAX_RETRIES=4                    # retries per tool per URL
-          readonly CONNECT_TIMEOUT=30               # seconds
-          readonly TRANSFER_TIMEOUT=3600            # seconds
-          readonly ARIA2_CONNECTIONS=16             # connections per server
-          readonly ARIA2_SPLITS=16                  # aria2 splits
-
-          # ════════════════════════════════════════════════════════════════════
-          # SECTION 1 — Input validation
-          # ════════════════════════════════════════════════════════════════════
-          if [ -z "${URLS:-}" ]; then
-            echo "❌ FATAL: No URLs provided. Aborting."
-            exit 1
+          # Validate split_parts
+          if [ "$SPLIT_PARTS" -lt 1 ] || [ "$SPLIT_PARTS" -gt 1000 ]; then
+            echo "Invalid split_parts: $SPLIT_PARTS. Using default 1 (no split)."
+            SPLIT_PARTS=1
           fi
 
-          if [ "${COMPRESSION_LEVEL}" -lt 1 ] || [ "${COMPRESSION_LEVEL}" -gt 9 ] 2>/dev/null; then
-            echo "⚠️  Invalid compression level '${COMPRESSION_LEVEL}', falling back to 6."
+          # Validate max_part_size_mb
+          if [ "$MAX_PART_SIZE_MB" -lt 0 ]; then
+            MAX_PART_SIZE_MB=0
+          fi
+
+          # If max_part_size_mb > 0, it takes precedence over split_parts
+          if [ "$MAX_PART_SIZE_MB" -gt 0 ]; then
+            USE_SPLIT_BY_SIZE=true
+          else
+            USE_SPLIT_BY_SIZE=false
+          fi
+
+          # Validate compression level
+          if [ "$COMPRESSION_LEVEL" -lt 1 ] || [ "$COMPRESSION_LEVEL" -gt 9 ]; then
+            echo "Invalid compression level: $COMPRESSION_LEVEL. Using default 6."
             COMPRESSION_LEVEL=6
           fi
 
-          TIMEOUT_MINUTES="${{ github.event.inputs.timeout_minutes }}"
-          if [ "${TIMEOUT_MINUTES}" -lt 10 ] || [ "${TIMEOUT_MINUTES}" -gt 360 ] 2>/dev/null; then
-            echo "⚠️  Timeout '${TIMEOUT_MINUTES}' out of range [10–360]. Using 120."
-            TIMEOUT_MINUTES=120
-          fi
-
-          echo "▶ Mode            : ${MODE}"
-          echo "▶ Archive format  : ${ARCHIVE_FORMAT}"
-          echo "▶ Compression     : level ${COMPRESSION_LEVEL}"
-          echo "▶ Password        : $([ -n "${ZIP_PASSWORD}" ] && echo 'ENABLED' || echo 'disabled')"
-          echo "▶ Output name     : ${OUTPUT_NAME:-'(auto from filename)'}"
-          echo "▶ Small-file limit: ${SMALL_FILE_THRESHOLD_MB} MB  (≤ = no chunking)"
-          echo "▶ Chunk size      : ${CHUNK_SIZE_MB} MB"
-
-          # ════════════════════════════════════════════════════════════════════
-          # SECTION 2 — Hardcoded User-Agent pool (rotation + fallback)
-          # ════════════════════════════════════════════════════════════════════
-          # Curated list: major browsers, up-to-date versions, Windows/macOS/Linux
-          declare -a UA_POOL=(
-            # Chrome (Windows) — most permissive, best server compatibility
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-            # Chrome (macOS)
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            # Firefox (Windows)
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0"
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0"
-            # Firefox (macOS)
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.4; rv:125.0) Gecko/20100101 Firefox/125.0"
-            # Edge (Windows)
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0"
-            # Safari (macOS)
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15"
-            # Chrome (Linux)
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            # Opera (Windows)
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 OPR/110.0.0.0"
-            # Brave (Windows) — same token as Chrome, different behaviour
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Brave/1.65"
-            # wget-style fallback for stubborn servers that block browsers
-            "Wget/1.21.4 (linux-gnu)"
-            # curl-style fallback
-            "curl/8.7.1"
-          )
-
-          # Primary UA: Chrome Windows (index 0) — industry standard
-          PRIMARY_UA="${UA_POOL[0]}"
-          UA_COUNT="${#UA_POOL[@]}"
-          echo "▶ User-Agent pool : ${UA_COUNT} agents loaded (auto-rotation enabled)"
-          echo "▶ Primary UA      : ${PRIMARY_UA:0:60}…"
-
-          # Helper: pick next UA by index (round-robin)
-          get_ua() {
-            local idx="${1:-0}"
-            echo "${UA_POOL[$((idx % UA_COUNT))]}"
-          }
-
-          # ════════════════════════════════════════════════════════════════════
-          # SECTION 3 — Common HTTP headers
-          # ════════════════════════════════════════════════════════════════════
-          declare -a COMMON_HEADERS=(
-            "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
-            "Accept-Language: en-US,en;q=0.9,fa;q=0.8"
-            "Accept-Encoding: gzip, deflate, br"
-            "Connection: keep-alive"
-            "DNT: 1"
-            "Upgrade-Insecure-Requests: 1"
-            "Sec-Fetch-Dest: document"
-            "Sec-Fetch-Mode: navigate"
-            "Sec-Fetch-Site: none"
-            "Referer: https://www.google.com/"
-            "Cache-Control: no-cache"
-            "Pragma: no-cache"
-          )
-
-          # ════════════════════════════════════════════════════════════════════
-          # SECTION 4 — Utility helpers
-          # ════════════════════════════════════════════════════════════════════
-          urlencode() {
-            python3 -c \
-              "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1],safe=''))" "$1"
-          }
-
-          human_bytes() {
-            local b="$1"
-            if   [ "$b" -ge 1073741824 ]; then printf "%.2f GB" "$(echo "scale=2;$b/1073741824"|bc)"
-            elif [ "$b" -ge 1048576 ];    then printf "%.2f MB" "$(echo "scale=2;$b/1048576"|bc)"
-            elif [ "$b" -ge 1024 ];       then printf "%.2f KB" "$(echo "scale=2;$b/1024"|bc)"
-            else printf "%d B" "$b"
-            fi
-          }
-
-          get_random_suffix() {
-            local words=(alpha beta gamma delta epsilon zeta theta kappa lambda sigma omega nova
-                         aurora cyan jade ruby onyx slate cedar grove hawk finch)
-            echo "${words[$RANDOM % ${#words[@]}]}_$(date +%s%N | tail -c 5)"
-          }
-
-          get_unique_folder() {
-            local BASE="$1" NAME="$2"
-            if [ ! -d "$BASE/$NAME" ] && [ ! -d "$BACKUP_DIR/$NAME" ]; then
-              echo "$NAME"; return
-            fi
-            local suf
-            suf=$(get_random_suffix)
-            while [ -d "$BASE/${NAME}_${suf}" ] || [ -d "$BACKUP_DIR/${NAME}_${suf}" ]; do
-              suf=$(get_random_suffix)
-            done
-            echo "${NAME}_${suf}"
-          }
-
-          sanitize_filename() {
-            # Decode common URL escapes, strip query/fragment, remove dangerous chars
-            local raw="$1"
-            raw=$(basename "$raw")
-            raw="${raw%%\?*}"
-            raw="${raw%%#*}"
-            raw=$(printf '%s' "$raw" | sed 's/%20/ /g;s/%2F/-/g;s/%2B/+/g;s/%28/(/g;s/%29/)/g')
-            raw=$(printf '%s' "$raw" | tr -d '<>:"|?*\\')
-            raw="${raw// /_}"
-            echo "$raw"
-          }
-
-          # ════════════════════════════════════════════════════════════════════
-          # SECTION 5 — Error report generator
-          # ════════════════════════════════════════════════════════════════════
-          create_error_report() {
-            local FILENAME="$1" ERROR_MSG="$2" URL="$3" TOOL_LOG="$4"
-            local BASE="${FILENAME%.*}"
-            local FOLDER
-            FOLDER=$(get_unique_folder "$BACKUP_DIR" "${BASE}_FAILED")
-            mkdir -p "$BACKUP_DIR/$FOLDER"
-            cat > "$BACKUP_DIR/$FOLDER/ERROR_REPORT.md" <<EOF
-# ❌ Download Failed — ${FILENAME}
-
-> Generated: $(date '+%Y-%m-%d %H:%M:%S UTC')
-
----
-
-## 📋 Request Summary
-| Field           | Value                              |
-|-----------------|------------------------------------|
-| Filename        | \`${FILENAME}\`                    |
-| Primary URL     | \`${URL}\`                         |
-| Mode            | \`${MODE}\`                        |
-| Archive format  | \`${ARCHIVE_FORMAT}\`              |
-| Timestamp (UTC) | $(date '+%Y-%m-%d %H:%M:%S')       |
-
----
-
-## ⚠️ Error Description
-\`\`\`
-${ERROR_MSG}
-\`\`\`
-
----
-
-## 🔍 Downloader Log (last 40 lines)
-\`\`\`
-${TOOL_LOG:0:4000}
-\`\`\`
-
----
-
-## 🛠 Troubleshooting Checklist
-| # | Possible cause                            | Recommended action                            |
-|---|-------------------------------------------|-----------------------------------------------|
-| 1 | URL is incorrect or typo                  | Double-check every character of the URL       |
-| 2 | File removed / moved on the server        | Verify the URL in your browser first          |
-| 3 | Server requires authentication / login    | Use a direct download link with token         |
-| 4 | Server actively blocks bots (403/429)     | Try a mirror URL or a different time of day   |
-| 5 | Temporary server outage (5xx errors)      | Retry the workflow in a few minutes           |
-| 6 | File size exceeds runner disk quota       | Free up repo space or split into smaller jobs |
-| 7 | Network timeout on GitHub runner          | Increase \`timeout_minutes\` input            |
-| 8 | All 6 mirror URLs also failed             | Find a new mirror and re-run                  |
-| 9 | SSL / certificate error                   | Usually transient — retry once                |
-
----
-
-*Report auto-generated by [MR.MMD2019 Downloader v3.0](https://github.com/MRmmd2019)*
-EOF
-            echo "📝 Error report written → $BACKUP_DIR/$FOLDER/ERROR_REPORT.md"
-          }
-
-          # ════════════════════════════════════════════════════════════════════
-          # SECTION 6 — Core single-file downloader (aria2c → curl → wget +
-          #             ht2 → wget2 → python requests) with UA rotation
-          # ════════════════════════════════════════════════════════════════════
-          download_file() {
-            local URL="$1" FILENAME="$2"
-            local ua_idx=0
-            local CUR_UA
-            local LOG=""
-            local SUCCESS=false
-
-            rm -f "tmp_downloads/$FILENAME" "tmp_downloads/$FILENAME.aria2"
-
-            # Build header args once (UA injected per attempt)
-            local aria_h=() curl_h=() wget_h=()
-            for h in "${COMMON_HEADERS[@]}"; do
-              aria_h+=("--header=$h")
-              curl_h+=(-H "$h")
-              wget_h+=(--header="$h")
-            done
-
-            # ── Tool 1: aria2c (fastest, multi-connection) ──────────────────
-            for ((att=1; att<=MAX_RETRIES; att++)); do
-              CUR_UA=$(get_ua $ua_idx)
-              echo "  [aria2c] attempt ${att}/${MAX_RETRIES}  UA#${ua_idx} → ${FILENAME}"
-              rm -f "tmp_downloads/$FILENAME" "tmp_downloads/$FILENAME.aria2"
-              LOG=$(aria2c \
-                --split="${ARIA2_SPLITS}" \
-                --max-connection-per-server="${ARIA2_CONNECTIONS}" \
-                --min-split-size=5M \
-                --max-tries=2 \
-                --retry-wait=3 \
-                --timeout="${CONNECT_TIMEOUT}" \
-                --connect-timeout="${CONNECT_TIMEOUT}" \
-                --follow-torrent=false \
-                --check-certificate=false \
-                --allow-overwrite=true \
-                --auto-file-renaming=false \
-                --file-allocation=none \
-                --summary-interval=0 \
-                --dir="tmp_downloads" \
-                --out="$FILENAME" \
-                --user-agent="$CUR_UA" \
-                "${aria_h[@]}" \
-                "$URL" 2>&1)
-              if [ -s "tmp_downloads/$FILENAME" ]; then
-                local sz; sz=$(stat -c%s "tmp_downloads/$FILENAME")
-                echo "  ✅ aria2c OK — $(human_bytes $sz)"
-                SUCCESS=true; break
-              fi
-              echo "  ⚠️  aria2c attempt ${att} failed."
-              ua_idx=$(( (ua_idx + 1) % UA_COUNT ))
-              sleep $((att * 2))
-            done
-
-            # ── Tool 2: curl (robust, widely supported) ─────────────────────
-            if [ "$SUCCESS" = false ]; then
-              for ((att=1; att<=MAX_RETRIES; att++)); do
-                CUR_UA=$(get_ua $ua_idx)
-                echo "  [curl] attempt ${att}/${MAX_RETRIES}  UA#${ua_idx} → ${FILENAME}"
-                rm -f "tmp_downloads/$FILENAME"
-                LOG=$(curl -L -f \
-                  --retry 2 --retry-delay 3 --retry-connrefused \
-                  --connect-timeout "${CONNECT_TIMEOUT}" \
-                  --max-time "${TRANSFER_TIMEOUT}" \
-                  --compressed \
-                  -A "$CUR_UA" \
-                  "${curl_h[@]}" \
-                  -o "tmp_downloads/$FILENAME" \
-                  "$URL" 2>&1)
-                if [ -s "tmp_downloads/$FILENAME" ]; then
-                  local sz; sz=$(stat -c%s "tmp_downloads/$FILENAME")
-                  echo "  ✅ curl OK — $(human_bytes $sz)"
-                  SUCCESS=true; break
-                fi
-                echo "  ⚠️  curl attempt ${att} failed."
-                ua_idx=$(( (ua_idx + 1) % UA_COUNT ))
-                sleep $((att * 3))
-              done
-            fi
-
-            # ── Tool 3: wget (standard fallback) ────────────────────────────
-            if [ "$SUCCESS" = false ]; then
-              for ((att=1; att<=MAX_RETRIES; att++)); do
-                CUR_UA=$(get_ua $ua_idx)
-                echo "  [wget] attempt ${att}/${MAX_RETRIES}  UA#${ua_idx} → ${FILENAME}"
-                rm -f "tmp_downloads/$FILENAME"
-                LOG=$(wget \
-                  --tries=2 \
-                  --timeout="${CONNECT_TIMEOUT}" \
-                  --waitretry=3 \
-                  --continue \
-                  --no-check-certificate \
-                  --user-agent="$CUR_UA" \
-                  "${wget_h[@]}" \
-                  -O "tmp_downloads/$FILENAME" \
-                  "$URL" 2>&1)
-                if [ -s "tmp_downloads/$FILENAME" ]; then
-                  local sz; sz=$(stat -c%s "tmp_downloads/$FILENAME")
-                  echo "  ✅ wget OK — $(human_bytes $sz)"
-                  SUCCESS=true; break
-                fi
-                echo "  ⚠️  wget attempt ${att} failed."
-                ua_idx=$(( (ua_idx + 1) % UA_COUNT ))
-                sleep $((att * 2))
-              done
-            fi
-
-            # ── Tool 4: Python urllib (last-resort, handles cookies/redirect) ─
-            if [ "$SUCCESS" = false ]; then
-              echo "  [python] last-resort urllib attempt → ${FILENAME}"
-              CUR_UA=$(get_ua $ua_idx)
-              rm -f "tmp_downloads/$FILENAME"
-              LOG=$(python3 - "$URL" "tmp_downloads/$FILENAME" "$CUR_UA" <<'PYEOF'
-import sys, urllib.request, ssl
-url, dest, ua = sys.argv[1], sys.argv[2], sys.argv[3]
-ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
-req = urllib.request.Request(url, headers={
-    'User-Agent': ua,
-    'Accept': '*/*',
-    'Referer': 'https://www.google.com/',
-})
-try:
-    with urllib.request.urlopen(req, context=ctx, timeout=120) as r, open(dest, 'wb') as f:
-        while chunk := r.read(65536):
-            f.write(chunk)
-    print('python urllib OK')
-except Exception as e:
-    print(f'python urllib FAILED: {e}', file=sys.stderr)
-    sys.exit(1)
-PYEOF
-              2>&1)
-              if [ -s "tmp_downloads/$FILENAME" ]; then
-                local sz; sz=$(stat -c%s "tmp_downloads/$FILENAME")
-                echo "  ✅ python urllib OK — $(human_bytes $sz)"
-                SUCCESS=true
-              else
-                echo "  ❌ python urllib failed."
-              fi
-            fi
-
-            if [ "$SUCCESS" = true ]; then
-              return 0
-            else
-              rm -f "tmp_downloads/$FILENAME"
-              echo "  ❌ All 4 tools exhausted for: $FILENAME"
-              return 1
-            fi
-          }
-
-          # ════════════════════════════════════════════════════════════════════
-          # SECTION 7 — Multi-mirror download wrapper
-          # ════════════════════════════════════════════════════════════════════
-          download_with_mirrors() {
-            local TARGET_NAME="$1"; shift
-            local -a CANDIDATES=("$@")
-            local COMBINED_LOG="" TRIED=0
-
-            for cand_url in "${CANDIDATES[@]}"; do
-              [ -z "$cand_url" ] && continue
-              local cand_name
-              cand_name=$(sanitize_filename "$cand_url")
-              TRIED=$((TRIED + 1))
-              echo "━━ Trying source ${TRIED}/${#CANDIDATES[@]}: ${cand_url}"
-
-              if download_file "$cand_url" "$cand_name"; then
-                # Rename to canonical target name if needed
-                if [ "$cand_name" != "$TARGET_NAME" ]; then
-                  mv "tmp_downloads/$cand_name" "tmp_downloads/$TARGET_NAME" 2>/dev/null || true
-                fi
-                echo "✅ Download SUCCESS: $TARGET_NAME (source ${TRIED})"
-                return 0
-              else
-                COMBINED_LOG+="[Source ${TRIED}] FAILED: ${cand_url}"$'\n'
-              fi
-            done
-
-            echo "❌ All ${TRIED} mirror(s) failed for: $TARGET_NAME"
-            create_error_report "$TARGET_NAME" \
-              "Every mirror URL was exhausted after ${TRIED} attempts." \
-              "${CANDIDATES[0]}" \
-              "$COMBINED_LOG"
-            return 1
-          }
-
-          # ════════════════════════════════════════════════════════════════════
-          # SECTION 8 — Smart chunked download (Range requests + parallelism)
-          #   • File ≤ SMALL_FILE_THRESHOLD_MB → single download
-          #   • File >  CHUNK_SIZE_MB         → parallel chunk download
-          # ════════════════════════════════════════════════════════════════════
-          smart_download() {
-            local URL="$1" FILENAME="$2"
-            local -a ALL_URLS=("${@:3}")   # all mirrors
-
-            echo "🔍 Probing file size for: $FILENAME"
-            local CONTENT_LENGTH=0
-            CONTENT_LENGTH=$(curl -sI --max-time 20 \
-              -A "${PRIMARY_UA}" \
-              -H "Accept: */*" \
-              "$URL" 2>/dev/null \
-              | grep -i '^content-length:' \
-              | tail -1 \
-              | tr -d '[:space:]' \
-              | cut -d: -f2) || true
-            CONTENT_LENGTH="${CONTENT_LENGTH:-0}"
-
-            # Fallback: try HEAD with wget
-            if [ -z "$CONTENT_LENGTH" ] || [ "$CONTENT_LENGTH" -eq 0 ] 2>/dev/null; then
-              CONTENT_LENGTH=$(wget --server-response --spider \
-                -A "${PRIMARY_UA}" \
-                "$URL" 2>&1 \
-                | grep -i 'Content-Length' \
-                | awk '{print $2}' \
-                | tail -1 \
-                | tr -d '[:space:]') || true
-              CONTENT_LENGTH="${CONTENT_LENGTH:-0}"
-            fi
-
-            local FILE_MB=0
-            if [ "${CONTENT_LENGTH:-0}" -gt 0 ] 2>/dev/null; then
-              FILE_MB=$(echo "scale=0; ${CONTENT_LENGTH} / 1048576" | bc)
-              echo "📐 Detected size: $(human_bytes ${CONTENT_LENGTH}) (${FILE_MB} MB)"
-            else
-              echo "⚠️  Could not detect file size — will attempt single download."
-            fi
-
-            # ── Decision: chunk or not ──────────────────────────────────────
-            if [ "${FILE_MB}" -le "${SMALL_FILE_THRESHOLD_MB}" ] || \
-               [ "${CONTENT_LENGTH:-0}" -eq 0 ] 2>/dev/null; then
-              echo "📥 Single download mode (≤${SMALL_FILE_THRESHOLD_MB} MB or size unknown)"
-              download_with_mirrors "$FILENAME" "${ALL_URLS[@]}"
-              return $?
-            fi
-
-            # ── Chunked parallel download ───────────────────────────────────
-            local NUM_CHUNKS=$(( (CONTENT_LENGTH + CHUNK_BYTES - 1) / CHUNK_BYTES ))
-            echo "🔪 Chunked mode: ${NUM_CHUNKS} chunk(s) × ${CHUNK_SIZE_MB} MB each"
-            echo "   File: $(human_bytes ${CONTENT_LENGTH})  ·  Parallel: ${NUM_CHUNKS} simultaneous"
-
-            # Check Accept-Ranges support
-            local ACCEPTS_RANGES
-            ACCEPTS_RANGES=$(curl -sI --max-time 20 \
-              -A "${PRIMARY_UA}" \
-              "$URL" 2>/dev/null \
-              | grep -i '^accept-ranges:' \
-              | tr -d '[:space:]' \
-              | cut -d: -f2 | tr '[:upper:]' '[:lower:]') || true
-
-            if [ "${ACCEPTS_RANGES}" != "bytes" ]; then
-              echo "⚠️  Server does not support Range requests — falling back to single download."
-              download_with_mirrors "$FILENAME" "${ALL_URLS[@]}"
-              return $?
-            fi
-
-            mkdir -p "tmp_downloads/chunks_${FILENAME}"
-            local chunk_pids=() chunk_statuses=()
-
-            for ((i=0; i<NUM_CHUNKS; i++)); do
-              local START=$(( i * CHUNK_BYTES ))
-              local END=$(( (i + 1) * CHUNK_BYTES - 1 ))
-              [ $END -ge $CONTENT_LENGTH ] && END=$(( CONTENT_LENGTH - 1 ))
-              local CHUNK_FILE="tmp_downloads/chunks_${FILENAME}/chunk_$(printf '%05d' $i)"
-
-              (
-                local retry=0
-                local ua_i=$(( i % UA_COUNT ))
-                while [ $retry -lt $MAX_RETRIES ]; do
-                  rm -f "$CHUNK_FILE"
-                  if curl -L -f --compressed \
-                       --range "${START}-${END}" \
-                       --connect-timeout "${CONNECT_TIMEOUT}" \
-                       --max-time "${TRANSFER_TIMEOUT}" \
-                       -A "$(get_ua $ua_i)" \
-                       -H "Accept: */*" \
-                       -o "$CHUNK_FILE" \
-                       "$URL" 2>/dev/null && [ -s "$CHUNK_FILE" ]; then
-                    local got; got=$(stat -c%s "$CHUNK_FILE")
-                    local want=$(( END - START + 1 ))
-                    if [ "$got" -ge $(( want - 1024 )) ]; then
-                      exit 0  # chunk OK
-                    fi
-                  fi
-                  retry=$(( retry + 1 ))
-                  ua_i=$(( (ua_i + 1) % UA_COUNT ))
-                  sleep $(( retry * 3 ))
-                done
-                echo "❌ Chunk ${i} failed after ${MAX_RETRIES} retries" >&2
-                exit 1
-              ) &
-              chunk_pids+=($!)
-            done
-
-            # Wait for all chunks; collect exit codes
-            local all_ok=true
-            for pid in "${chunk_pids[@]}"; do
-              if ! wait "$pid"; then
-                all_ok=false
-              fi
-            done
-
-            if [ "$all_ok" = false ]; then
-              echo "❌ One or more chunks failed. Falling back to full single download."
-              rm -rf "tmp_downloads/chunks_${FILENAME}"
-              download_with_mirrors "$FILENAME" "${ALL_URLS[@]}"
-              return $?
-            fi
-
-            # Concatenate chunks in order
-            echo "🔗 Assembling ${NUM_CHUNKS} chunk(s) → ${FILENAME}"
-            cat $(ls "tmp_downloads/chunks_${FILENAME}/chunk_"* | sort) \
-              > "tmp_downloads/$FILENAME"
-            rm -rf "tmp_downloads/chunks_${FILENAME}"
-
-            if [ -s "tmp_downloads/$FILENAME" ]; then
-              local final_sz; final_sz=$(stat -c%s "tmp_downloads/$FILENAME")
-              echo "✅ Assembly complete: $(human_bytes ${final_sz})"
-              return 0
-            else
-              echo "❌ Assembly produced empty file. Retrying as single download."
-              rm -f "tmp_downloads/$FILENAME"
-              download_with_mirrors "$FILENAME" "${ALL_URLS[@]}"
-              return $?
-            fi
-          }
-
-          # ════════════════════════════════════════════════════════════════════
-          # SECTION 9 — Archive creation with format fallback chain
-          #   Preferred format → zip → 7z → tar.gz → tar.bz2 → tar.xz → tar.zst
-          # ════════════════════════════════════════════════════════════════════
-          compress_file() {
-            local SRC_FILE="$1"    # absolute path to source
-            local DEST_BASE="$2"   # destination without extension
-            local PASSWORD="$3"
-            local LEVEL="$4"
-
-            local PREFERRED="${ARCHIVE_FORMAT}"
-            # Full fallback priority chain (preferred is moved to front)
-            local -a FORMAT_CHAIN=(zip 7z tar.gz tar.bz2 tar.xz tar.zst)
-            # Move preferred to front if not already there
-            local ORDERED=("$PREFERRED")
-            for fmt in "${FORMAT_CHAIN[@]}"; do
-              [ "$fmt" = "$PREFERRED" ] && continue
-              ORDERED+=("$fmt")
-            done
-
-            local RESULT_FILE=""
-            local USED_FORMAT=""
-
-            for fmt in "${ORDERED[@]}"; do
-              echo "  🗜 Trying archive format: ${fmt}"
-              local OUT="${DEST_BASE}.${fmt}"
-              local ok=false
-
-              case "$fmt" in
-                zip)
-                  if [ -n "$PASSWORD" ]; then
-                    zip -j "-${LEVEL}" -P "$PASSWORD" "$OUT" "$SRC_FILE" >/dev/null 2>&1 && ok=true
-                  else
-                    zip -j "-${LEVEL}" "$OUT" "$SRC_FILE" >/dev/null 2>&1 && ok=true
-                  fi
-                  ;;
-                7z)
-                  local p_arg=""
-                  [ -n "$PASSWORD" ] && p_arg="-p${PASSWORD}"
-                  7z a -mx="${LEVEL}" $p_arg "$OUT" "$SRC_FILE" >/dev/null 2>&1 && ok=true
-                  ;;
-                tar.gz)
-                  if [ -n "$PASSWORD" ]; then
-                    # 7z can create encrypted tar.gz with -tgzip approach; simpler: use gpg piggyback
-                    tar -cz -C "$(dirname "$SRC_FILE")" "$(basename "$SRC_FILE")" 2>/dev/null \
-                      | gpg --batch --symmetric --cipher-algo AES256 \
-                            --passphrase "$PASSWORD" --no-symkey-cache \
-                            -o "${OUT}.gpg" 2>/dev/null && ok=true \
-                      || (tar -czf "$OUT" -C "$(dirname "$SRC_FILE")" "$(basename "$SRC_FILE")" >/dev/null 2>&1 && ok=true)
-                  else
-                    tar -czf "$OUT" -C "$(dirname "$SRC_FILE")" "$(basename "$SRC_FILE")" >/dev/null 2>&1 && ok=true
-                  fi
-                  ;;
-                tar.bz2)
-                  tar -cjf "$OUT" -C "$(dirname "$SRC_FILE")" "$(basename "$SRC_FILE")" >/dev/null 2>&1 && ok=true
-                  ;;
-                tar.xz)
-                  tar -cJf "$OUT" -C "$(dirname "$SRC_FILE")" "$(basename "$SRC_FILE")" >/dev/null 2>&1 && ok=true
-                  ;;
-                tar.zst)
-                  tar --use-compress-program='zstd -T0' \
-                    -cf "$OUT" -C "$(dirname "$SRC_FILE")" "$(basename "$SRC_FILE")" >/dev/null 2>&1 && ok=true
-                  ;;
-              esac
-
-              if [ "$ok" = true ] && [ -s "$OUT" ]; then
-                echo "  ✅ Archive created: $(basename $OUT) ($(human_bytes $(stat -c%s $OUT)))"
-                RESULT_FILE="$OUT"
-                USED_FORMAT="$fmt"
-                break
-              else
-                echo "  ⚠️  Format ${fmt} failed — trying next fallback."
-                rm -f "$OUT" "${OUT}.gpg" 2>/dev/null || true
-              fi
-            done
-
-            if [ -z "$RESULT_FILE" ]; then
-              echo "  ❌ All archive formats failed. File will be saved as-is."
-              RESULT_FILE="$SRC_FILE"
-              USED_FORMAT="original"
-            fi
-
-            # Export to caller
-            COMPRESS_RESULT_FILE="$RESULT_FILE"
-            COMPRESS_USED_FORMAT="$USED_FORMAT"
-          }
-
-          # ════════════════════════════════════════════════════════════════════
-          # SECTION 10 — Post-processing: normal mode
-          #   • Save file as original (no zip, no split)
-          # ════════════════════════════════════════════════════════════════════
-          process_normal() {
-            local FILE="$1"
-            [ -f "$FILE" ] && [ -s "$FILE" ] || { echo "⚠️  Skipping empty/missing: $FILE"; return; }
-
-            local BASENAME; BASENAME=$(basename "$FILE")
-            local BASENAME_NO_EXT="${BASENAME%.*}"
-            local SIZE; SIZE=$(stat -c%s "$FILE")
-            local FOLDER_NAME
-            FOLDER_NAME=$(get_unique_folder "$BACKUP_DIR" \
-              "${OUTPUT_NAME:-$BASENAME_NO_EXT}")
-            mkdir -p "$BACKUP_DIR/$FOLDER_NAME"
-
-            echo "💾 [normal] Saving as-is: $BASENAME ($(human_bytes $SIZE))"
-
-            # Copy original file unchanged
-            cp "$FILE" "$BACKUP_DIR/$FOLDER_NAME/$BASENAME"
-
-            # Checksum
-            local CHECKSUM; CHECKSUM=$(sha256sum "$FILE" | awk '{print $1}')
-            printf '%s  %s\n' "$CHECKSUM" "$BASENAME" \
-              > "$BACKUP_DIR/$FOLDER_NAME/SHA256SUMS"
-
-            # Download link
-            local FOLDER_ENC FILE_ENC
-            FOLDER_ENC=$(urlencode "$FOLDER_NAME")
-            FILE_ENC=$(urlencode "$BASENAME")
-            local DL_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/DOWNLOAD/${FOLDER_ENC}/${FILE_ENC}"
-
-            write_readme "$FOLDER_NAME" "$BASENAME" "$SIZE" 1 \
-              "$CHECKSUM" "None (original file)" "normal" \
-              "| 1 | \`${BASENAME}\` | [⬇ Download](${DL_LINK}) |"$'\n'
-          }
-
-          # ════════════════════════════════════════════════════════════════════
-          # SECTION 11 — Post-processing: zip mode
-          #   • Compress with format fallback
-          #   • Auto-split into ≤95 MB chunks if archive > 95 MB
-          # ════════════════════════════════════════════════════════════════════
-          process_zip() {
-            local FILE="$1"
-            [ -f "$FILE" ] && [ -s "$FILE" ] || { echo "⚠️  Skipping empty/missing: $FILE"; return; }
-
-            local BASENAME; BASENAME=$(basename "$FILE")
-            local BASENAME_NO_EXT="${BASENAME%.*}"
-            local ORIG_SIZE; ORIG_SIZE=$(stat -c%s "$FILE")
-            local FOLDER_NAME
-            FOLDER_NAME=$(get_unique_folder "$BACKUP_DIR" \
-              "${OUTPUT_NAME:-$BASENAME_NO_EXT}")
-            mkdir -p "$BACKUP_DIR/$FOLDER_NAME"
-
-            local CHECKSUM; CHECKSUM=$(sha256sum "$FILE" | awk '{print $1}')
-            echo "🗜 [zip] Compressing: $BASENAME ($(human_bytes $ORIG_SIZE))"
-
-            # Compress
-            local COMPRESS_RESULT_FILE="" COMPRESS_USED_FORMAT=""
-            compress_file "$FILE" \
-              "$BACKUP_DIR/$FOLDER_NAME/$FOLDER_NAME" \
-              "$ZIP_PASSWORD" \
-              "$COMPRESSION_LEVEL"
-
-            local ARCHIVE_FILE="$COMPRESS_RESULT_FILE"
-            local USED_FMT="$COMPRESS_USED_FORMAT"
-            local ARCHIVE_SIZE; ARCHIVE_SIZE=$(stat -c%s "$ARCHIVE_FILE")
-
-            echo "📦 Archive: $(basename $ARCHIVE_FILE)  $(human_bytes $ARCHIVE_SIZE)"
-
-            # Split if needed
-            local -a PARTS=()
-            if [ "$ARCHIVE_SIZE" -gt "$CHUNK_BYTES" ] && [ "$USED_FMT" != "original" ]; then
-              echo "✂️  Archive exceeds ${CHUNK_SIZE_MB} MB — splitting..."
-              local SPLIT_BASE="$BACKUP_DIR/$FOLDER_NAME/${FOLDER_NAME}"
-              # Use zip -s for zip; use split for others
-              if [ "$USED_FMT" = "zip" ]; then
-                zip -j "-${COMPRESSION_LEVEL}" \
-                  -s "${CHUNK_SIZE_MB}m" \
-                  "${SPLIT_BASE}_split.zip" \
-                  "$FILE" >/dev/null 2>&1 || true
-                rm -f "$ARCHIVE_FILE" 2>/dev/null || true
-                mapfile -t PARTS < <(ls "$BACKUP_DIR/$FOLDER_NAME/"*.zip \
-                  "$BACKUP_DIR/$FOLDER_NAME/"*.z[0-9]* 2>/dev/null | sort)
-              else
-                split -b "${CHUNK_BYTES}" --numeric-suffixes=1 \
-                  "$ARCHIVE_FILE" "${SPLIT_BASE}.part"
-                rm -f "$ARCHIVE_FILE" 2>/dev/null || true
-                mapfile -t PARTS < <(ls "${SPLIT_BASE}.part"* 2>/dev/null | sort)
-              fi
-            else
-              PARTS=("$ARCHIVE_FILE")
-            fi
-
-            printf '%s  %s\n' "$CHECKSUM" "$BASENAME" \
-              > "$BACKUP_DIR/$FOLDER_NAME/SHA256SUMS"
-
-            local PARTS_COUNT="${#PARTS[@]}"
-            local TOTAL_ARCHIVE_SZ=0
-            for p in "${PARTS[@]}"; do
-              TOTAL_ARCHIVE_SZ=$((TOTAL_ARCHIVE_SZ + $(stat -c%s "$p")))
-            done
-
-            # Build download links table
-            local FOLDER_ENC; FOLDER_ENC=$(urlencode "$FOLDER_NAME")
-            local DOWNLOAD_TABLE="" N=0
-            for p in "${PARTS[@]}"; do
-              N=$((N+1))
-              local PNAME; PNAME=$(basename "$p")
-              local PENC; PENC=$(urlencode "$PNAME")
-              local PSZ; PSZ=$(stat -c%s "$p")
-              DOWNLOAD_TABLE+="| ${N} | \`${PNAME}\` | $(human_bytes $PSZ) | [⬇ Download](https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/DOWNLOAD/${FOLDER_ENC}/${PENC}) |"$'\n'
-            done
-
-            write_readme_zip "$FOLDER_NAME" "$BASENAME" \
-              "$ORIG_SIZE" "$TOTAL_ARCHIVE_SZ" \
-              "$PARTS_COUNT" "$CHECKSUM" "$USED_FMT" \
-              "$DOWNLOAD_TABLE"
-          }
-
-          # ════════════════════════════════════════════════════════════════════
-          # SECTION 12 — README writers
-          # ════════════════════════════════════════════════════════════════════
-          write_readme() {
-            local FOLDER="$1" FNAME="$2" SZ="$3" PARTS="$4" \
-                  CHKSUM="$5" FMT="$6" MODE_LABEL="$7" LINKS="$8"
-            local SZ_HR; SZ_HR=$(human_bytes $SZ)
-            cat > "$BACKUP_DIR/$FOLDER/README.md" <<REOF
-# 📥 ${FNAME}
-
-> Saved: $(date '+%Y-%m-%d %H:%M:%S UTC')  |  Mode: **${MODE_LABEL}**
-
----
-
-## 📄 File Information
-| Property          | Value                           |
-|-------------------|---------------------------------|
-| Filename          | \`${FNAME}\`                    |
-| Original size     | ${SZ_HR}                        |
-| Parts             | ${PARTS}                        |
-| Format            | ${FMT}                          |
-| Password          | $([ -n "${ZIP_PASSWORD}" ] && echo '🔒 **YES**' || echo '🔓 No') |
-| SHA-256           | \`${CHKSUM}\`                   |
-| Compression level | ${COMPRESSION_LEVEL}            |
-
----
-
-## 🔗 Download Links
-| # | File | Size | Link |
-|---|------|------|------|
-${LINKS}
-
----
-
-## 📦 How to Use
-1. Click **Download** above to save the file.
-2. No extraction needed — this is the original file.
-3. *(Optional)* Verify integrity:
-   \`\`\`bash
-   sha256sum -c SHA256SUMS
-   \`\`\`
-
----
-*Generated by [MR.MMD2019 Downloader v3.0](https://github.com/MRmmd2019)*
-REOF
-          }
-
-          write_readme_zip() {
-            local FOLDER="$1" ORIG_NAME="$2" ORIG_SZ="$3" ARC_SZ="$4" \
-                  PARTS_COUNT="$5" CHKSUM="$6" FMT_USED="$7" LINKS="$8"
-            local ORIG_HR ARC_HR RATIO
-            ORIG_HR=$(human_bytes $ORIG_SZ)
-            ARC_HR=$(human_bytes $ARC_SZ)
-            RATIO=$(echo "scale=1; ${ARC_SZ}*100/${ORIG_SZ}" | bc 2>/dev/null || echo "?")
-
-            cat > "$BACKUP_DIR/$FOLDER/README.md" <<REOF
-# 📦 ${ORIG_NAME} — Compressed Archive
-
-> Saved: $(date '+%Y-%m-%d %H:%M:%S UTC')  |  Format: **${FMT_USED}**  |  Parts: **${PARTS_COUNT}**
-
----
-
-## 📄 Archive Information
-| Property           | Value                           |
-|--------------------|---------------------------------|
-| Original file      | \`${ORIG_NAME}\`                |
-| Original size      | ${ORIG_HR}                      |
-| Archive size       | ${ARC_HR} (${RATIO}% of orig)  |
-| Format used        | \`${FMT_USED}\`                 |
-| Parts              | ${PARTS_COUNT}                  |
-| Password           | $([ -n "${ZIP_PASSWORD}" ] && echo '🔒 **YES**' || echo '🔓 No') |
-| SHA-256 (original) | \`${CHKSUM}\`                   |
-| Compression level  | ${COMPRESSION_LEVEL}            |
-
----
-
-## 🔗 Download Links
-| # | Part | Size | Link |
-|---|------|------|------|
-${LINKS}
-
----
-
-## 📦 How to Extract
-$([ "$PARTS_COUNT" -gt 1 ] && echo "1. **Download ALL ${PARTS_COUNT} parts** into the same folder." || echo "1. Download the archive.")
-$([ "$FMT_USED" = "zip" ] && echo "2. Open \`${FOLDER}.zip\` with **WinRAR**, **7-Zip**, or **Ark**." || true)
-$([ "$FMT_USED" = "7z" ] && echo "2. Open with **7-Zip** (recommended) or **WinRAR**." || true)
-$(echo "$FMT_USED" | grep -q "tar" && echo "2. Run: \`tar xf ${FOLDER}.${FMT_USED}\`" || true)
-$([ -n "${ZIP_PASSWORD}" ] && echo "3. 🔑 Enter password when prompted." || true)
-4. *(Optional)* Verify original file checksum:
-   \`\`\`bash
-   sha256sum -c SHA256SUMS
-   \`\`\`
-
----
-
-## 🌍 Persian / فارسی
-$([ -n "${ZIP_PASSWORD}" ] && echo "- رمز عبور: تنظیم شده است (از ادمین دریافت کنید)" || echo "- رمز عبور: ندارد")
-- روش استخراج: تمام پارت‌ها را دانلود کرده در یک پوشه قرار دهید و با WinRAR یا 7-Zip باز کنید.
-
----
-*Generated by [MR.MMD2019 Downloader v3.0](https://github.com/MRmmd2019)*
-REOF
-          }
-
-          # ════════════════════════════════════════════════════════════════════
-          # SECTION 13 — Orchestration: build URL lists, dispatch parallel jobs
-          # ════════════════════════════════════════════════════════════════════
+          # Backup location (survives git operations)
           BACKUP_DIR="/tmp/download_backup_$$"
           mkdir -p "$BACKUP_DIR"
           echo "$BACKUP_DIR" > /tmp/backup_dir_path.txt
 
-          mkdir -p DOWNLOAD tmp_downloads
-
-          IFS=' ' read -r -a PRIMARY_URLS <<< "$URLS"
-          IFS=' ' read -r -a MIRROR1_URLS <<< "${URLS_MIRROR1:-}"
-          IFS=' ' read -r -a MIRROR2_URLS <<< "${URLS_MIRROR2:-}"
-          IFS=' ' read -r -a MIRROR3_URLS <<< "${URLS_MIRROR3:-}"
-          IFS=' ' read -r -a MIRROR4_URLS <<< "${URLS_MIRROR4:-}"
-          IFS=' ' read -r -a MIRROR5_URLS <<< "${URLS_MIRROR5:-}"
-          IFS=' ' read -r -a MIRROR6_URLS <<< "${URLS_MIRROR6:-}"
-
-          TOTAL_URLS="${#PRIMARY_URLS[@]}"
-          echo "▶ Total files to download: ${TOTAL_URLS}"
-          echo ""
-
-          set -m   # job control
-          declare -a JOB_PIDS=()
-          declare -A JOB_FILES=()
-
-          # Auto-parallelism: spawn one job per file (each job handles its own
-          # internal retry/fallback); cap at runner core count to avoid thrash
-          MAX_PARALLEL=$(nproc 2>/dev/null || echo 4)
-          [ "$MAX_PARALLEL" -gt 8 ] && MAX_PARALLEL=8
-          echo "▶ Parallel download workers: ${MAX_PARALLEL}"
-
-          for ((idx=0; idx<TOTAL_URLS; idx++)); do
-            PRIMARY_URL="${PRIMARY_URLS[$idx]}"
-            FILENAME=$(sanitize_filename "$PRIMARY_URL")
-
-            # Collect all mirrors for this index
-            declare -a CANDIDATES=("$PRIMARY_URL")
-            for MIRROR_VAR in MIRROR1_URLS MIRROR2_URLS MIRROR3_URLS \
-                              MIRROR4_URLS MIRROR5_URLS MIRROR6_URLS; do
-              eval "ARR=(\"\${${MIRROR_VAR}[@]}\")"
-              if [ "${#ARR[@]}" -gt "$idx" ] && [ -n "${ARR[$idx]:-}" ]; then
-                CANDIDATES+=("${ARR[$idx]}")
-              fi
-            done
-
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "📋 File $((idx+1))/${TOTAL_URLS}: ${FILENAME}"
-            echo "   Primary : ${PRIMARY_URL}"
-            echo "   Mirrors : $((${#CANDIDATES[@]}-1))"
-
-            # Throttle: wait if we have too many running jobs
-            while [ "${#JOB_PIDS[@]}" -ge "$MAX_PARALLEL" ]; do
-              sleep 1
-              declare -a ALIVE_PIDS=()
-              for pid in "${JOB_PIDS[@]}"; do
-                kill -0 "$pid" 2>/dev/null && ALIVE_PIDS+=("$pid")
-              done
-              JOB_PIDS=("${ALIVE_PIDS[@]}")
-            done
-
-            # Run smart_download in background subshell
-            (
-              # Re-export functions for subshell
-              export -f smart_download download_with_mirrors download_file \
-                         compress_file process_normal process_zip \
-                         write_readme write_readme_zip create_error_report \
-                         get_ua human_bytes urlencode sanitize_filename \
-                         get_unique_folder get_random_suffix
-              export BACKUP_DIR PRIMARY_UA UA_COUNT ZIP_PASSWORD \
-                     COMPRESSION_LEVEL ARCHIVE_FORMAT MODE \
-                     SMALL_FILE_THRESHOLD_MB CHUNK_SIZE_MB CHUNK_BYTES \
-                     MAX_RETRIES CONNECT_TIMEOUT TRANSFER_TIMEOUT \
-                     ARIA2_SPLITS ARIA2_CONNECTIONS OUTPUT_NAME \
-                     REPO_OWNER REPO_NAME BRANCH
-              export -a UA_POOL COMMON_HEADERS
-
-              if smart_download "$PRIMARY_URL" "$FILENAME" "${CANDIDATES[@]}"; then
-                echo "⚙️  Post-processing: ${FILENAME}  mode=${MODE}"
-                FILE="tmp_downloads/$FILENAME"
-                if [ "$MODE" = "zip" ]; then
-                  process_zip "$FILE"
-                else
-                  process_normal "$FILE"
-                fi
-                rm -f "$FILE"
-              else
-                echo "❌ Download pipeline failed for: $FILENAME"
-              fi
-            ) &
-            JOB_PIDS+=($!)
-          done
-
-          # Wait for all jobs
-          echo ""
-          echo "⏳ Waiting for all download jobs to finish..."
-          for pid in "${JOB_PIDS[@]}"; do
-            wait "$pid" || echo "⚠️  A background job exited with error (pid=$pid)."
-          done
-          set +m
-
-          echo ""
-          echo "════════════════════════════════════════════════════"
-          echo "✅ All downloads and processing complete."
-          echo "════════════════════════════════════════════════════"
-          echo ""
-          echo "Backup directory contents:"
-          find "$BACKUP_DIR" -type f | sort | head -80
-
-      # ── 6. Copy results into DOWNLOAD/ and write index READMEs ─────────────
-      - name: Update DOWNLOAD folder and index READMEs
-        run: |
-          BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
-          mkdir -p DOWNLOAD
-
-          if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
-            cp -r "$BACKUP_DIR"/* DOWNLOAD/
-            echo "✅ Results copied to DOWNLOAD/"
+          echo "MR.MMD2019 - Download mode: $MODE"
+          if [ "$USE_SPLIT_BY_SIZE" = true ]; then
+            echo "Split mode: max part size = ${MAX_PART_SIZE_MB} MB"
           else
-            echo "⚠️  Backup directory is empty — nothing to copy."
+            echo "Split mode: number of parts = $SPLIT_PARTS"
+          fi
+          echo "Max parallel downloads: $MAX_PARALLEL"
+          echo "Keep original (no archive): $KEEP_ORIGINAL"
+          echo "Custom output name: ${OUTPUT_NAME:-'(auto)'}"
+          echo "Compression level: $COMPRESSION_LEVEL"
+          echo "Backup directory: $BACKUP_DIR"
+          if [ -n "$ZIP_PASSWORD" ]; then
+            echo "Password protection: ENABLED"
+          else
+            echo "Password protection: DISABLED"
           fi
 
-          # Count results
-          TOTAL_FOLDERS=$(find DOWNLOAD -mindepth 1 -maxdepth 1 -type d | wc -l)
-          FAILED_FOLDERS=$(find DOWNLOAD -name 'ERROR_REPORT.md' | wc -l)
-          SUCCESS_FOLDERS=$(( TOTAL_FOLDERS - FAILED_FOLDERS ))
+          mkdir -p DOWNLOAD tmp_downloads
 
-          # ── Master index README (English) ──────────────────────────────────
-          cat > DOWNLOAD/README.md <<'EOF'
-# 📥 MR.MMD2019 Downloader — DOWNLOAD Index
+          # Use custom User-Agent if provided, else default
+          if [ -n "$USER_AGENT_INPUT" ]; then
+            CHROME_UA="$USER_AGENT_INPUT"
+          else
+            CHROME_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+          fi
 
-Welcome to your download storage folder. Each subfolder here corresponds to
-one downloaded file (or a failed attempt with an error report).
+          # Additional headers for all downloaders
+          HEADERS=(
+            "Accept: */*"
+            "Accept-Language: en-US,en;q=0.9,fa;q=0.8"
+            "Connection: keep-alive"
+            "DNT: 1"
+            "Upgrade-Insecure-Requests: 1"
+            "Referer:https/www.google.com/"
+          )
 
----
+          # Helper functions
+          urlencode() {
+            python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
+          }
 
-## 🚀 Quick Start
+          get_random_word() {
+            local words=(alpha beta gamma delta epsilon zeta theta kappa lambda sigma omega nova star moon sun sky cloud river ocean mountain)
+            echo "${words[$RANDOM % ${#words[@]}]}_$RANDOM"
+          }
 
-1. **Trigger the workflow** — go to `Actions → DOWNLOADER-2019 → Run workflow`.
-2. **Fill in the inputs**:
-   - **urls** — paste the direct download URL(s), space-separated for multiple files.
-   - **urls_mirror1 … mirror6** — paste fallback/mirror URLs in the same order as primary.
-   - **mode** — `normal` saves the file as-is; `zip` compresses it before saving.
-   - **archive_format** — preferred compression format (zip / 7z / tar.gz / tar.bz2 / tar.xz / tar.zst).
-   - **password** — optional password for the archive (zip mode only).
-   - **output_name** — optional custom name for the output folder.
-   - **compression_level** — 1 (fast/large) → 9 (slow/small); default 6.
-   - **timeout_minutes** — max job runtime; increase for very large files.
-3. **Wait for the job** to finish (check the Actions tab for live logs).
-4. **Navigate** into the subfolder for your file and click the Download link.
+          get_unique_folder() {
+            local BASE="$1"
+            local NAME="$2"
+            if [ ! -d "$BASE/$NAME" ] && [ ! -d "$BACKUP_DIR/$NAME" ]; then
+              echo "$NAME"
+              return
+            fi
+            local suffix=$(get_random_word)
+            while [ -d "$BASE/${NAME}_${suffix}" ] || [ -d "$BACKUP_DIR/${NAME}_${suffix}" ]; do
+              suffix=$(get_random_word)
+            done
+            echo "${NAME}_${suffix}"
+          }
 
----
+          create_error_file() {
+            local FILENAME="$1"
+            local ERROR_MSG="$2"
+            local URL="$3"
+            local BASENAME_NO_EXT="${FILENAME%.*}"
+            local FOLDER_NAME=$(get_unique_folder "$BACKUP_DIR" "$BASENAME_NO_EXT")
+            mkdir -p "$BACKUP_DIR/$FOLDER_NAME"
+            cat > "$BACKUP_DIR/$FOLDER_NAME/README.md" << EOF
+          # ${FILENAME} - Download Failed
 
-## 📐 How Files Are Split
+          ## Download Information
+          | Property | Value |
+          |----------|-------|
+          | **File** | \`${FILENAME}\` |
+          | **URL** | ${URL} |
+          | **Date** | $(date '+%Y-%m-%d %H:%M:%S UTC') |
+          | **Status** | **FAILED** |
 
-| File size          | Behaviour                                              |
-|--------------------|--------------------------------------------------------|
-| ≤ 90 MB            | Downloaded as a single file — no chunking              |
-| > 95 MB            | Automatically split into ≤ 95 MB parallel chunks       |
-| Archive > 95 MB    | Archive itself is split into ≤ 95 MB parts             |
+          ## Error Details
+          \`\`\`
+          $ERROR_MSG
+          \`\`\`
 
-All chunks are downloaded **simultaneously** for maximum speed.
+          ## Possible Solutions
+          - Check if the URL is correct and accessible
+          - The file may have been removed or moved
+          - The server may require authentication
+          - Some servers block automated downloads (403 Forbidden)
+          - Try again later if it is a temporary server issue
 
----
+          *This tool created by [MR.MMD2019](https://github.com/MRmmd2019)*
+          EOF
+            echo "Error file created: $BACKUP_DIR/$FOLDER_NAME/README.md"
+          }
 
-## 🗜 Archive Format Fallback Chain
+          # Download function with fallback chain: aria2c -> curl -> wget
+          download_file() {
+            local URL="$1"
+            local FILENAME="$2"
+            local MAX_RETRIES=3
+            local SUCCESS=false
+            local ERROR_LOG=""
 
-When a compression format fails, the downloader automatically tries the next one:
+            local aria2c_headers=()
+            local curl_headers=()
+            local wget_headers=()
+            for h in "${HEADERS[@]}"; do
+              aria2c_headers+=("--header=$h")
+              curl_headers+=(-H "$h")
+              wget_headers+=(--header="$h")
+            done
 
-```
-Selected format → zip → 7z → tar.gz → tar.bz2 → tar.xz → tar.zst
-```
+            rm -f "tmp_downloads/$FILENAME" "tmp_downloads/$FILENAME.aria2"
 
----
+            # ---- aria2c ----
+            for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
+              echo "aria2c attempt $attempt for $FILENAME"
+              rm -f "tmp_downloads/$FILENAME" "tmp_downloads/$FILENAME.aria2"
+              ERROR_LOG=$(aria2c \
+                --split=2 \
+                --max-connection-per-server=2 \
+                --min-split-size=20M \
+                --max-tries=3 \
+                --retry-wait=5 \
+                --timeout=60 \
+                --connect-timeout=30 \
+                --follow-torrent=false \
+                --check-certificate=false \
+                --allow-overwrite=true \
+                --auto-file-renaming=false \
+                --dir="tmp_downloads" \
+                --out="$FILENAME" \
+                --user-agent="$CHROME_UA" \
+                "${aria2c_headers[@]}" \
+                "$URL" 2>&1)
 
-## 🔍 Integrity Verification
+              if [ -f "tmp_downloads/$FILENAME" ] && [ -s "tmp_downloads/$FILENAME" ]; then
+                local sz=$(stat -c%s "tmp_downloads/$FILENAME")
+                if [ "$sz" -gt 0 ]; then
+                  SUCCESS=true
+                  echo "aria2c OK: $FILENAME ($sz bytes)"
+                  break
+                fi
+              fi
+              echo "aria2c failed or empty file."
+            done
 
-Every folder contains a `SHA256SUMS` file. To verify:
-```bash
-cd DOWNLOAD/<folder-name>
-sha256sum -c SHA256SUMS
-```
-Output `OK` means the file is intact.
+            # ---- curl ----
+            if [ "$SUCCESS" = false ]; then
+              for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
+                echo "curl attempt $attempt for $FILENAME"
+                rm -f "tmp_downloads/$FILENAME"
+                ERROR_LOG=$(curl -L -f --retry 3 --retry-delay 5 \
+                  --connect-timeout 30 --max-time 3600 \
+                  -A "$CHROME_UA" \
+                  "${curl_headers[@]}" \
+                  -o "tmp_downloads/$FILENAME" \
+                  "$URL" 2>&1)
 
----
+                if [ -f "tmp_downloads/$FILENAME" ] && [ -s "tmp_downloads/$FILENAME" ]; then
+                  local sz=$(stat -c%s "tmp_downloads/$FILENAME")
+                  if [ "$sz" -gt 0 ]; then
+                    SUCCESS=true
+                    echo "curl OK: $FILENAME ($sz bytes)"
+                    break
+                  fi
+                fi
+                echo "curl attempt $attempt failed."
+              done
+            fi
 
-## 🧹 Cleanup
+            # ---- wget ----
+            if [ "$SUCCESS" = false ]; then
+              for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
+                echo "wget attempt $attempt for $FILENAME"
+                rm -f "tmp_downloads/$FILENAME"
+                ERROR_LOG=$(wget --tries=3 --timeout=60 --continue \
+                  --user-agent="$CHROME_UA" \
+                  "${wget_headers[@]}" \
+                  -O "tmp_downloads/$FILENAME" \
+                  "$URL" 2>&1)
 
-To delete all downloaded files, run the **Purge DOWNLOAD directory** workflow
-from the Actions tab.
+                if [ -f "tmp_downloads/$FILENAME" ] && [ -s "tmp_downloads/$FILENAME" ]; then
+                  local sz=$(stat -c%s "tmp_downloads/$FILENAME")
+                  if [ "$sz" -gt 0 ]; then
+                    SUCCESS=true
+                    echo "wget OK: $FILENAME ($sz bytes)"
+                    break
+                  fi
+                fi
+                echo "wget attempt $attempt failed."
+              done
+            fi
 
----
+            if [ "$SUCCESS" = true ] && [ -f "tmp_downloads/$FILENAME" ] && [ -s "tmp_downloads/$FILENAME" ]; then
+              echo "Successfully downloaded: $FILENAME"
+              return 0
+            else
+              rm -f "tmp_downloads/$FILENAME"
+              create_error_file "$FILENAME" "Download failed after all methods. Last error: $ERROR_LOG" "$URL"
+              return 1
+            fi
+          }
 
-## ❌ If a Download Failed
+          set -m
+          pids=()
+          download_counter=0
+          for URL in $URLS; do
+            FILENAME=$(basename "$URL" | sed 's/%20/ /g; s/%2F/-/g; s/[?#].*//' | sed 's/[<>:"|?*]/_/g')
+            echo "Queue download: $URL -> $FILENAME"
 
-Open `ERROR_REPORT.md` inside the `*_FAILED` subfolder.
-It contains the exact error, a log excerpt, and a troubleshooting checklist.
+            while [ ${#pids[@]} -ge $MAX_PARALLEL ]; do
+              wait -n 2>/dev/null || true
+              new_pids=()
+              for pid in "${pids[@]}"; do
+                if kill -0 "$pid" 2>/dev/null; then
+                  new_pids+=("$pid")
+                fi
+              done
+              pids=("${new_pids[@]}")
+            done
 
----
+            download_file "$URL" "$FILENAME" &
+            pids+=($!)
+            download_counter=$((download_counter+1))
+          done
 
-**Tool by [`MR.MMD2019`](https://github.com/MRmmd2019)**  |  v3.0
-EOF
+          for pid in "${pids[@]}"; do
+            wait "$pid" || true
+          done
+          set +m
+          echo "All downloads completed."
 
-          # ── Master index README (Persian) ──────────────────────────────────
-          cat > DOWNLOAD/README_FA.md <<'EOF'
-# 📥 دانلودر MR.MMD2019 — راهنمای کامل
+          # Post-processing: archiving, splitting, checksums, READMEs
+          process_file() {
+            local FILE="$1"
+            [ -f "$FILE" ] || return
+            [ -s "$FILE" ] || { echo "Skipping empty: $FILE"; rm -f "$FILE"; return; }
 
-به پوشه ذخیره دانلودهای شما خوش آمدید.
-هر زیرپوشه اینجا مربوط به یک فایل دانلود شده (یا یک خطا با گزارش کامل) است.
+            local SIZE BASENAME BASENAME_NO_EXT EXT BASE_FOLDER_NAME FOLDER_NAME
+            local CHECKSUM DEST STORED_SIZE STORED_SIZE_MB TOTAL_SIZE_MB PARTS_COUNT ARCHIVE_SIZE_MB
+            local DOWNLOAD_LINKS_MD FOLDER_ENCODED PART_NAME PART_ENCODED
+            local SPLIT_SIZE_MB ARCHIVE_BASE PARTS TOTAL_ARCHIVE_SIZE
 
----
+            SIZE=$(stat -c%s "$FILE")
+            BASENAME=$(basename "$FILE")
+            BASENAME_NO_EXT="${BASENAME%.*}"
+            EXT="${BASENAME##*.}"
 
-## 🚀 شروع سریع
+            if [ -n "$OUTPUT_NAME" ]; then
+              BASE_FOLDER_NAME="$OUTPUT_NAME"
+            else
+              BASE_FOLDER_NAME="$BASENAME_NO_EXT"
+            fi
 
-1. **اجرای Workflow** — به `Actions → DOWNLOADER-2019 → Run workflow` بروید.
-2. **ورودی‌ها را پر کنید**:
-   - **urls** — آدرس‌های مستقیم دانلود (با فاصله برای چند فایل).
-   - **urls_mirror1 … mirror6** — آدرس‌های آینه/فالبک به همان ترتیب primary.
-   - **mode** — `normal` = فایل اصلی | `zip` = فشرده‌سازی قبل از ذخیره.
-   - **archive_format** — فرمت فشرده‌سازی دلخواه (zip / 7z / tar.gz / …).
-   - **password** — رمز عبور اختیاری برای آرشیو (فقط در حالت zip).
-   - **output_name** — نام دلخواه برای پوشه خروجی (اختیاری).
-   - **compression_level** — 1 (سریع/بزرگ) تا 9 (کند/کوچک) — پیش‌فرض ۶.
-   - **timeout_minutes** — حداکثر زمان اجرا؛ برای فایل‌های بزرگ افزایش دهید.
-3. **صبر کنید** تا job تمام شود (لاگ زنده در تب Actions).
-4. **وارد زیرپوشه** شوید و روی لینک Download کلیک کنید.
+            FOLDER_NAME=$(get_unique_folder "$BACKUP_DIR" "$BASE_FOLDER_NAME")
+            mkdir -p "$BACKUP_DIR/$FOLDER_NAME"
 
----
+            CHECKSUM=$(sha256sum "$FILE" | awk '{print $1}')
+            printf '%s  %s\n' "$CHECKSUM" "$BASENAME" > "$BACKUP_DIR/$FOLDER_NAME/SHA256SUMS"
 
-## 📐 نحوه تقسیم فایل‌ها
+            if [ "$KEEP_ORIGINAL" = "true" ]; then
+              DEST="$BACKUP_DIR/$FOLDER_NAME/$BASENAME"
+              cp "$FILE" "$DEST" || { echo "Failed to copy original file $BASENAME"; return 1; }
+              STORED_SIZE=$SIZE
+              STORED_SIZE_MB=$(echo "scale=2; $STORED_SIZE / 1048576" | bc)
+              TOTAL_SIZE_MB=$STORED_SIZE_MB
+              PARTS_COUNT=1
+              ARCHIVE_SIZE_MB=$STORED_SIZE_MB
+              DOWNLOAD_LINKS_MD=""
+              FOLDER_ENCODED=$(urlencode "$FOLDER_NAME")
+              PART_NAME="$BASENAME"
+              PART_ENCODED=$(urlencode "$PART_NAME")
+              DOWNLOAD_LINKS_MD="| 1 | \`$PART_NAME\` | [Download](https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/DOWNLOAD/${FOLDER_ENCODED}/${PART_ENCODED}) |"$'\n'
+            else
+              ARCHIVE_BASE="$BACKUP_DIR/$FOLDER_NAME/${FOLDER_NAME}"
 
-| حجم فایل           | رفتار                                                   |
-|--------------------|---------------------------------------------------------|
-| ≤ ۹۰ مگابایت       | دانلود یکپارچه — بدون تقسیم                             |
-| > ۹۵ مگابایت       | تقسیم خودکار به تکه‌های ≤ ۹۵ مگابایتی به صورت موازی   |
-| آرشیو > ۹۵ مگابایت | آرشیو نیز به پارت‌های ≤ ۹۵ مگابایتی تقسیم می‌شود      |
+              if [ "$USE_SPLIT_BY_SIZE" = true ]; then
+                SPLIT_SIZE_MB=$MAX_PART_SIZE_MB
+                echo "Using fixed part size: ${SPLIT_SIZE_MB} MB"
+              elif [ "$SPLIT_PARTS" -gt 1 ]; then
+                SPLIT_SIZE_MB=$(echo "($SIZE + $SPLIT_PARTS - 1) / $SPLIT_PARTS / 1048576 + 1" | bc)
+                echo "Splitting $BASENAME into $SPLIT_PARTS parts (~${SPLIT_SIZE_MB} MB each)"
+              else
+                SPLIT_SIZE_MB=0
+              fi
 
-تمام تکه‌ها **به صورت همزمان** دانلود می‌شوند.
+              if [ "$SPLIT_SIZE_MB" -gt 0 ]; then
+                if [ -n "$ZIP_PASSWORD" ]; then
+                  zip -j -${COMPRESSION_LEVEL} -P "$ZIP_PASSWORD" -s ${SPLIT_SIZE_MB}m "${ARCHIVE_BASE}.zip" "$FILE" || {
+                    echo "ERROR: zip split failed for $BASENAME"
+                    rm -rf "$BACKUP_DIR/$FOLDER_NAME"
+                    return 1
+                  }
+                else
+                  zip -j -${COMPRESSION_LEVEL} -s ${SPLIT_SIZE_MB}m "${ARCHIVE_BASE}.zip" "$FILE" || {
+                    echo "ERROR: zip split failed for $BASENAME"
+                    rm -rf "$BACKUP_DIR/$FOLDER_NAME"
+                    return 1
+                  }
+                fi
+              else
+                if [ -n "$ZIP_PASSWORD" ]; then
+                  zip -j -${COMPRESSION_LEVEL} -P "$ZIP_PASSWORD" "${ARCHIVE_BASE}.zip" "$FILE" || {
+                    echo "ERROR: zip failed for $BASENAME"
+                    rm -rf "$BACKUP_DIR/$FOLDER_NAME"
+                    return 1
+                  }
+                else
+                  zip -j -${COMPRESSION_LEVEL} "${ARCHIVE_BASE}.zip" "$FILE" || {
+                    echo "ERROR: zip failed for $BASENAME"
+                    rm -rf "$BACKUP_DIR/$FOLDER_NAME"
+                    return 1
+                  }
+                fi
+              fi
 
----
+              PARTS=($(ls "$BACKUP_DIR/$FOLDER_NAME/"*.zip "$BACKUP_DIR/$FOLDER_NAME/"*.z[0-9]* 2>/dev/null | sort))
+              TOTAL_ARCHIVE_SIZE=0
+              for part in "${PARTS[@]}"; do
+                TOTAL_ARCHIVE_SIZE=$((TOTAL_ARCHIVE_SIZE + $(stat -c%s "$part")))
+              done
+              ARCHIVE_SIZE_MB=$(echo "scale=2; $TOTAL_ARCHIVE_SIZE / 1048576" | bc)
 
-## 🗜 زنجیره فالبک فرمت آرشیو
+              FOLDER_ENCODED=$(urlencode "$FOLDER_NAME")
+              DOWNLOAD_LINKS_MD=""
+              COUNT=0
+              for part in "${PARTS[@]}"; do
+                PART_NAME=$(basename "$part")
+                PART_ENCODED=$(urlencode "$PART_NAME")
+                COUNT=$((COUNT+1))
+                DOWNLOAD_LINKS_MD+="| $COUNT | \`$PART_NAME\` | [Download](https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/DOWNLOAD/${FOLDER_ENCODED}/${PART_ENCODED}) |"$'\n'
+              done
+              PARTS_COUNT=$COUNT
+            fi
 
-اگر فرمت انتخابی ناموفق باشد، دانلودر به صورت خودکار به بعدی سوئیچ می‌کند:
+            cat > "$BACKUP_DIR/$FOLDER_NAME/README.md" << ENG_EOF
+          # $BASENAME_NO_EXT
 
-```
-فرمت انتخابی → zip → 7z → tar.gz → tar.bz2 → tar.xz → tar.zst
-```
+          ---
 
----
+          ## 📄 File Information
+          | Property          | Value                          |
+          |-------------------|--------------------------------|
+          | Original File     | \`$BASENAME\`                  |
+          | Total Size        | $ARCHIVE_SIZE_MB MB ($PARTS_COUNT part(s)) |
+          | Status            | ✅ Complete                    |
+          | Password Protected| $([ -n "$ZIP_PASSWORD" ] && echo "**YES**" || echo "NO") |
+          | SHA256 Checksum   | \`$CHECKSUM\`                  |
+          | Compression Level | $COMPRESSION_LEVEL |
 
-## 🔍 تأیید صحت فایل
+          ---
 
-هر پوشه یک فایل `SHA256SUMS` دارد. برای بررسی:
-```bash
-cd DOWNLOAD/<نام-پوشه>
-sha256sum -c SHA256SUMS
-```
-خروجی `OK` یعنی فایل سالم است.
+          ## 🔗 Download Links
+          | # | File | Link |
+          |---|------|------|
+          $DOWNLOAD_LINKS_MD
 
----
+          ---
 
-## 🧹 پاکسازی
+          ## 📦 How to Extract
+          $([ "$KEEP_ORIGINAL" = "true" ] && echo "File is stored as-is (no archive)." || echo "1. Download all parts (if multiple).")
+          $([ "$KEEP_ORIGINAL" = "true" ] || echo "2. Open \`${FOLDER_NAME}.zip\` with WinRAR, 7-Zip, Ark, or any standard ZIP tool.")
+          $([ "$KEEP_ORIGINAL" = "true" ] || echo "3. Extract — all parts combine automatically.")
+          $([ -n "$ZIP_PASSWORD" ] && [ "$KEEP_ORIGINAL" != "true" ] && echo "4. **Enter the password** when prompted.")
+          5. (Optional) Verify integrity using the SHA256 checksum above.
 
-برای حذف تمام فایل‌های دانلود شده، workflow **Purge DOWNLOAD directory**
-را از تب Actions اجرا کنید.
+          ---
 
----
+          *Powered by [MR.MMD2019](https://github.com/MRmmd2019)*
+          ENG_EOF
 
-## ❌ در صورت خطا
+            cat > "$BACKUP_DIR/$FOLDER_NAME/README_FA.md" << FA_EOF
+          # $BASENAME_NO_EXT
 
-فایل `ERROR_REPORT.md` را در زیرپوشه‌ای که `_FAILED` دارد باز کنید.
-این فایل شامل خطای دقیق، لاگ، و چک‌لیست رفع مشکل است.
+          ---
 
----
+          ## 📄 اطلاعات فایل
+          | ویژگی               | مقدار                         |
+          |---------------------|-------------------------------|
+          | نام اصلی فایل       | \`$BASENAME\`                 |
+          | حجم کل (بایگانی)    | $ARCHIVE_SIZE_MB مگابایت ($PARTS_COUNT بخش) |
+          | وضعیت               | ✅ کامل                       |
+          | محافظت با رمز       | $([ -n "$ZIP_PASSWORD" ] && echo "**بله**" || echo "خیر") |
+          | چکسام SHA256        | \`$CHECKSUM\`                 |
+          | سطح فشرده‌سازی      | $COMPRESSION_LEVEL |
 
-**ابزار توسط [`MR.MMD2019`](https://github.com/MRmmd2019)**  |  نسخه ۳.۰
-EOF
+          ---
 
-          echo "✅ Index READMEs written."
+          ## 🔗 لینک‌های دانلود
+          | # | فایل | لینک |
+          |---|------|------|
+          $DOWNLOAD_LINKS_MD
 
-      # ── 7. Incremental commit & push ─────────────────────────────────────────
-      - name: Commit and push results
+          ---
+
+          ## 📦 روش استخراج
+          $([ "$KEEP_ORIGINAL" = "true" ] && echo "فایل به صورت اصلی (بدون بایگانی) ذخیره شده است." || echo "1. تمام بخش‌ها را دانلود کنید (اگر چند بخش وجود دارد).")
+          $([ "$KEEP_ORIGINAL" = "true" ] || echo "2. فایل \`${FOLDER_NAME}.zip\` را با WinRAR، 7-Zip، Ark یا هر نرم‌افزار ZIP باز کنید.")
+          $([ "$KEEP_ORIGINAL" = "true" ] || echo "3. استخراج کنید — بخش‌ها به‌طور خودکار ترکیب می‌شوند.")
+          $([ -n "$ZIP_PASSWORD" ] && [ "$KEEP_ORIGINAL" != "true" ] && echo "4. هنگام درخواست، **رمز عبور** را وارد کنید.")
+          5. (اختیاری) درستی فایل را با چکسام SHA256 بالا بررسی کنید.
+
+          ---
+
+          *قدرت گرفته از [MR.MMD2019](https://github.com/MRmmd2019)*
+          FA_EOF
+          }
+
+          if [ "$MODE" = "zip" ]; then
+            if compgen -G "tmp_downloads/*" > /dev/null; then
+              ARCHIVE_NAME="archive_$(date +%Y%m%d_%H%M%S)"
+              FOLDER_NAME=$(get_unique_folder "$BACKUP_DIR" "$ARCHIVE_NAME")
+              mkdir -p "$BACKUP_DIR/$FOLDER_NAME"
+              TEMP_ORIG="/tmp/orig_files_$$"
+              mkdir -p "$TEMP_ORIG"
+              cp tmp_downloads/* "$TEMP_ORIG/" 2>/dev/null
+
+              COMBINED_ZIP="/tmp/${ARCHIVE_NAME}.zip"
+              if [ -n "$ZIP_PASSWORD" ]; then
+                zip -j -${COMPRESSION_LEVEL} -P "$ZIP_PASSWORD" "$COMBINED_ZIP" tmp_downloads/* || {
+                  echo "ERROR: combined archive zip failed"
+                  rm -rf "$TEMP_ORIG" tmp_downloads
+                  exit 1
+                }
+              else
+                zip -j -${COMPRESSION_LEVEL} "$COMBINED_ZIP" tmp_downloads/* || {
+                  echo "ERROR: combined archive zip failed"
+                  rm -rf "$TEMP_ORIG" tmp_downloads
+                  exit 1
+                }
+              fi
+
+              mv "$COMBINED_ZIP" "tmp_downloads/${ARCHIVE_NAME}.zip"
+              CHECKSUM=$(sha256sum "tmp_downloads/${ARCHIVE_NAME}.zip" | awk '{print $1}')
+              FILE="tmp_downloads/${ARCHIVE_NAME}.zip"
+              SIZE=$(stat -c%s "$FILE")
+              BASENAME=$(basename "$FILE")
+              BASENAME_NO_EXT="${BASENAME%.*}"
+              FOLDER_NAME=$(get_unique_folder "$BACKUP_DIR" "$BASENAME_NO_EXT")
+              mkdir -p "$BACKUP_DIR/$FOLDER_NAME"
+              printf '%s  %s\n' "$CHECKSUM" "$BASENAME" > "$BACKUP_DIR/$FOLDER_NAME/SHA256SUMS"
+
+              if [ "$KEEP_ORIGINAL" = "true" ]; then
+                DEST="$BACKUP_DIR/$FOLDER_NAME/$BASENAME"
+                cp "$FILE" "$DEST" || { echo "Failed to copy combined archive"; exit 1; }
+                STORED_SIZE=$SIZE
+                STORED_SIZE_MB=$(echo "scale=2; $STORED_SIZE / 1048576" | bc)
+                TOTAL_SIZE_MB=$STORED_SIZE_MB
+                PARTS_COUNT=1
+                ARCHIVE_SIZE_MB=$STORED_SIZE_MB
+                FOLDER_ENCODED=$(urlencode "$FOLDER_NAME")
+                PART_NAME="$BASENAME"
+                PART_ENCODED=$(urlencode "$PART_NAME")
+                DOWNLOAD_LINKS_MD="| 1 | \`$PART_NAME\` | [Download](https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/DOWNLOAD/${FOLDER_ENCODED}/${PART_ENCODED}) |"$'\n'
+              else
+                if [ "$USE_SPLIT_BY_SIZE" = true ]; then
+                  SPLIT_SIZE_MB=$MAX_PART_SIZE_MB
+                elif [ "$SPLIT_PARTS" -gt 1 ]; then
+                  SPLIT_SIZE_MB=$(echo "($SIZE + $SPLIT_PARTS - 1) / $SPLIT_PARTS / 1048576 + 1" | bc)
+                else
+                  SPLIT_SIZE_MB=0
+                fi
+
+                if [ "$SPLIT_SIZE_MB" -gt 0 ]; then
+                  zip -j -${COMPRESSION_LEVEL} -s ${SPLIT_SIZE_MB}m "$BACKUP_DIR/$FOLDER_NAME/${FOLDER_NAME}.zip" "$FILE" || {
+                    echo "ERROR: split of combined archive failed"
+                    rm -rf "$BACKUP_DIR/$FOLDER_NAME" "$TEMP_ORIG"
+                    exit 1
+                  }
+                else
+                  cp "$FILE" "$BACKUP_DIR/$FOLDER_NAME/${FOLDER_NAME}.zip" || {
+                    echo "ERROR: copy of combined archive failed"
+                    exit 1
+                  }
+                fi
+
+                PARTS=($(ls "$BACKUP_DIR/$FOLDER_NAME/"*.zip "$BACKUP_DIR/$FOLDER_NAME/"*.z[0-9]* 2>/dev/null | sort))
+                TOTAL_ARCHIVE_SIZE=0
+                for part in "${PARTS[@]}"; do TOTAL_ARCHIVE_SIZE=$((TOTAL_ARCHIVE_SIZE + $(stat -c%s "$part"))); done
+                ARCHIVE_SIZE_MB=$(echo "scale=2; $TOTAL_ARCHIVE_SIZE / 1048576" | bc)
+                FOLDER_ENCODED=$(urlencode "$FOLDER_NAME")
+                DOWNLOAD_LINKS_MD=""
+                COUNT=0
+                for part in "${PARTS[@]}"; do
+                  PART_NAME=$(basename "$part")
+                  PART_ENCODED=$(urlencode "$PART_NAME")
+                  COUNT=$((COUNT+1))
+                  DOWNLOAD_LINKS_MD+="| $COUNT | \`$PART_NAME\` | [Download](https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/DOWNLOAD/${FOLDER_ENCODED}/${PART_ENCODED}) |"$'\n'
+                done
+                PARTS_COUNT=$COUNT
+              fi
+
+              cat > "$BACKUP_DIR/$FOLDER_NAME/README.md" << ENG_EOF
+          # Combined Archive: $ARCHIVE_NAME
+
+          ---
+
+          ## 📄 Archive Information
+          | Property          | Value                          |
+          |-------------------|--------------------------------|
+          | Total Size        | $ARCHIVE_SIZE_MB MB ($PARTS_COUNT part(s)) |
+          | Status            | ✅ Complete                    |
+          | Password Protected| $([ -n "$ZIP_PASSWORD" ] && echo "**YES**" || echo "NO") |
+          | SHA256 Checksum   | \`$CHECKSUM\`                  |
+          | Compression Level | $COMPRESSION_LEVEL |
+
+          ---
+
+          ## 🔗 Download Links
+          | # | File | Link |
+          |---|------|------|
+          $DOWNLOAD_LINKS_MD
+
+          ---
+
+          ## 📦 How to Extract
+          $([ "$KEEP_ORIGINAL" = "true" ] && echo "File is stored as-is (no archive)." || echo "1. Download all parts.")
+          $([ "$KEEP_ORIGINAL" = "true" ] || echo "2. Open \`${FOLDER_NAME}.zip\` with any ZIP tool.")
+          $([ "$KEEP_ORIGINAL" = "true" ] || echo "3. Extract — all parts combine automatically.")
+          $([ -n "$ZIP_PASSWORD" ] && [ "$KEEP_ORIGINAL" != "true" ] && echo "4. Enter the password when prompted.")
+          5. (Optional) Verify the checksum.
+
+          ---
+
+          *Powered by [MR.MMD2019](https://github.com/MRmmd2019)*
+          ENG_EOF
+
+              cat > "$BACKUP_DIR/$FOLDER_NAME/README_FA.md" << FA_EOF
+          # بایگانی ترکیبی: $ARCHIVE_NAME
+
+          ---
+
+          ## 📄 اطلاعات بایگانی
+          | ویژگی               | مقدار                         |
+          |---------------------|-------------------------------|
+          | حجم کل              | $ARCHIVE_SIZE_MB مگابایت ($PARTS_COUNT بخش) |
+          | وضعیت               | ✅ کامل                       |
+          | محافظت با رمز       | $([ -n "$ZIP_PASSWORD" ] && echo "**بله**" || echo "خیر") |
+          | چکسام SHA256        | \`$CHECKSUM\`                 |
+          | سطح فشرده‌سازی      | $COMPRESSION_LEVEL |
+
+          ---
+
+          ## 🔗 لینک‌های دانلود
+          | # | فایل | لینک |
+          |---|------|------|
+          $DOWNLOAD_LINKS_MD
+
+          ---
+
+          ## 📦 روش استخراج
+          $([ "$KEEP_ORIGINAL" = "true" ] && echo "فایل به صورت اصلی (بدون بایگانی) ذخیره شده است." || echo "1. تمام بخش‌ها را دانلود کنید.")
+          $([ "$KEEP_ORIGINAL" = "true" ] || echo "2. فایل \`${FOLDER_NAME}.zip\` را با هر نرم‌افزار ZIP باز کنید.")
+          $([ "$KEEP_ORIGINAL" = "true" ] || echo "3. استخراج کنید — بخش‌ها به‌طور خودکار ترکیب می‌شوند.")
+          $([ -n "$ZIP_PASSWORD" ] && [ "$KEEP_ORIGINAL" != "true" ] && echo "4. رمز عبور را وارد کنید.")
+          5. (اختیاری) صحت فایل را با چکسام بررسی کنید.
+
+          ---
+
+          *قدرت گرفته از [MR.MMD2019](https://github.com/MRmmd2019)*
+          FA_EOF
+
+              rm -rf "$TEMP_ORIG"
+            fi
+            rm -rf tmp_downloads
+          else
+            shopt -s nullglob
+            for FILE in tmp_downloads/*; do
+              [ -f "$FILE" ] || continue
+              process_file "$FILE"
+            done
+            shopt -u nullglob
+            rm -rf tmp_downloads
+          fi
+
+          echo ""
+          echo "===== Backup folder contents ($BACKUP_DIR) ====="
+          find "$BACKUP_DIR" -type f | head -50
+
+      - name: Update master READMEs
+        env:
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          BRANCH: ${{ github.ref_name }}
+          REPO_URL_BASE: ${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/DOWNLOAD
+        run: |
+          BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
+          REPO_OWNER="${REPO_OWNER}"
+          REPO_NAME="${REPO_NAME}"
+          BRANCH="${BRANCH}"
+          REPO_URL="${REPO_URL_BASE}"
+
+          mkdir -p DOWNLOAD
+          if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
+            cp -r "$BACKUP_DIR"/* DOWNLOAD/
+          fi
+
+          FOLDERS=$(find DOWNLOAD -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
+          if [ -z "$FOLDERS" ]; then
+            echo "No folders found in DOWNLOAD"
+            exit 0
+          fi
+
+          urlencode() {
+            python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
+          }
+
+          {
+            echo "# Downloaded Files List"
+            echo ""
+            for FOLDER in $FOLDERS; do
+              FOLDER_ENCODED=$(urlencode "$FOLDER")
+              echo "- [${FOLDER}](./${FOLDER_ENCODED})"
+            done
+            echo ""
+            echo "---"
+            echo ""
+            echo "*Tool by [MR.MMD2019](https://github.com/MRmmd2019)*"
+          } > DOWNLOAD/README.md
+
+          {
+            echo "# لیست فایل‌های دانلود شده"
+            echo ""
+            for FOLDER in $FOLDERS; do
+              FOLDER_ENCODED=$(urlencode "$FOLDER")
+              echo "- [${FOLDER}](./${FOLDER_ENCODED})"
+            done
+            echo ""
+            echo "---"
+            echo ""
+            echo "*ابزار ساخته‌شده توسط [MR.MMD2019](https://github.com/MRmmd2019)*"
+          } > DOWNLOAD/README_FA.md
+
+          SECTION_TITLE="فایل های دانلود شده در گیتهاب شما :"
+          if [ ! -f "README.md" ]; then
+            echo "# MR.MMD2019 Downloader" > README.md
+            echo "" >> README.md
+            echo "https://github.com/MRmmd2019" >> README.md
+            echo "" >> README.md
+          fi
+
+          if grep -q "$SECTION_TITLE" README.md; then
+            sed -i "/$SECTION_TITLE/,/^---$/d" README.md
+            sed -i '${/^$/d;}' README.md
+          fi
+
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "## $SECTION_TITLE"
+            echo ""
+            COUNTER=1
+            for FOLDER in $FOLDERS; do
+              FOLDER_ENCODED=$(urlencode "$FOLDER")
+              echo "${COUNTER}. [$FOLDER]($REPO_URL/$FOLDER_ENCODED)"
+              echo ""
+              COUNTER=$((COUNTER+1))
+            done
+            echo "---"
+          } >> README.md
+
+          echo "Master READMEs updated."
+
+      - name: Incremental Commit & Push
         env:
           BRANCH: ${{ github.ref_name }}
         run: |
           BRANCH="${BRANCH}"
           BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
 
-          echo "🔄 Syncing with remote..."
+          echo "Starting incremental push..."
           git fetch origin "$BRANCH"
-          git reset --hard "origin/$BRANCH"
+          git reset --rebase origin/"$BRANCH"
 
           mkdir -p DOWNLOAD
           cp -r "$BACKUP_DIR"/* DOWNLOAD/ 2>/dev/null || true
 
-          # Collect all files: READMEs first, then data files
-          declare -a ALL_FILES=()
-          while IFS= read -r -d '' f; do
-            ALL_FILES+=("$f")
-          done < <(find DOWNLOAD -type f \
-                    \( -name "README.md" -o -name "README_FA.md" \
-                       -o -name "SHA256SUMS" -o -name "ERROR_REPORT.md" \) \
-                    -print0 | sort -z)
-          while IFS= read -r -d '' f; do
-            ALL_FILES+=("$f")
-          done < <(find DOWNLOAD -type f \
-                    ! -name "README.md" ! -name "README_FA.md" \
-                    ! -name "SHA256SUMS" ! -name "ERROR_REPORT.md" \
-                    -print0 | sort -z)
+          ALL_FILES=()
+          while IFS= read -r -d '' f; do ALL_FILES+=("$f"); done < <(find DOWNLOAD -type f -name "README.md" -print0)
+          while IFS= read -r -d '' f; do ALL_FILES+=("$f"); done < <(find DOWNLOAD -type f ! -name "README.md" ! -name "README_FA.md" -print0 | sort -z)
 
-          TOTAL_FILES="${#ALL_FILES[@]}"
-          echo "📁 Files to commit: ${TOTAL_FILES}"
+          TOTAL_FILES=${#ALL_FILES[@]}
+          echo "Files to push: $TOTAL_FILES"
 
-          if [ "$TOTAL_FILES" -eq 0 ]; then
-            echo "ℹ️  Nothing new to commit."
+          if [ $TOTAL_FILES -eq 0 ]; then
+            git add README.md DOWNLOAD/README.md DOWNLOAD/README_FA.md 2>/dev/null || true
+            if ! git diff --cached --quiet; then
+              git commit -m "[MR.MMD2019] Update master READMEs [skip ci]"
+              git push origin HEAD:"$BRANCH"
+            fi
             exit 0
           fi
 
-          # Batched push (3 files per commit to stay within push limits)
-          push_batch() {
-            local -a BATCH=("$@")
-            for f in "${BATCH[@]}"; do git add "$f" 2>/dev/null || true; done
-            git diff --cached --quiet && return 0
-            git commit -m "[MR.MMD2019] Add downloaded files [skip ci]" --quiet
-
-            local retry=0
-            while [ $retry -lt 5 ]; do
-              if timeout 300 git push origin HEAD:"$BRANCH"; then
-                echo "  ✅ Push succeeded."
-                return 0
-              fi
-              retry=$((retry + 1))
-              echo "  ⚠️  Push attempt ${retry}/5 failed — rebasing and retrying..."
-              sleep $((3 + RANDOM % 5))
-              git fetch origin "$BRANCH" --quiet
-              if ! git rebase "origin/$BRANCH" --quiet 2>/dev/null; then
-                echo "  ❌ Rebase conflict — aborting this batch."
-                git rebase --abort 2>/dev/null || true
-                return 1
-              fi
-            done
-            echo "  ❌ Could not push batch after 5 attempts."
-            return 1
+          batched_push() {
+            local batch=("$@")
+            for f in "${batch[@]}"; do git add "$f" 2>/dev/null || true; done
+            if ! git diff --cached --quiet; then
+              git commit -m "[MR.MMD2019] Partial push [skip ci]" --quiet
+              local retry=0
+              while [ $retry -lt 5 ]; do
+                if timeout 180 git push origin HEAD:"$BRANCH"; then
+                  return 0
+                else
+                  echo "Push failed, attempt $((retry+1))/5..."
+                  sleep $((2+RANDOM%5))
+                  git fetch origin "$BRANCH" --quiet
+                  if ! git rebase origin/"$BRANCH" --quiet; then
+                    echo "Rebase conflict – aborting batch"
+                    git rebase --abort
+                    return 1
+                  fi
+                fi
+                retry=$((retry+1))
+              done
+              return 1
+            fi
           }
 
-          declare -a BATCH=()
+          batch=()
           for file in "${ALL_FILES[@]}"; do
-            BATCH+=("$file")
-            if [ "${#BATCH[@]}" -ge 3 ]; then
-              push_batch "${BATCH[@]}" || {
-                echo "❌ FATAL: push failed. Aborting."
+            batch+=("$file")
+            if [ ${#batch[@]} -ge 3 ]; then
+              batched_push "${batch[@]}" || {
+                echo "FATAL: Could not push batch, aborting."
                 exit 1
               }
-              BATCH=()
-              # Re-sync before next batch
-              git fetch origin "$BRANCH" --quiet
-              git rebase "origin/$BRANCH" --quiet 2>/dev/null || git rebase --abort
-              cp -r "$BACKUP_DIR"/* DOWNLOAD/ 2>/dev/null || true
+              batch=()
             fi
           done
-
-          [ "${#BATCH[@]}" -gt 0 ] && push_batch "${BATCH[@]}" || true
-
-          # Final: ensure index READMEs are up to date
-          git fetch origin "$BRANCH"
-          git rebase "origin/$BRANCH" --quiet 2>/dev/null || git rebase --abort
-          git add DOWNLOAD/README.md DOWNLOAD/README_FA.md
-          if ! git diff --cached --quiet; then
-            git commit -m "[MR.MMD2019] Update index READMEs [skip ci]"
-            timeout 180 git push origin HEAD:"$BRANCH" \
-              || echo "⚠️  Warning: final README push failed (non-fatal)."
+          if [ ${#batch[@]} -gt 0 ]; then
+            batched_push "${batch[@]}" || {
+              echo "FATAL: Could not push final batch, aborting."
+              exit 1
+            }
           fi
 
-          echo ""
-          echo "════════════════════════════════════════════════════"
-          echo "🎉 All files committed and pushed successfully."
-          echo "════════════════════════════════════════════════════"
+          git fetch origin "$BRANCH"
+          git rebase origin/"$BRANCH" --quiet 2>/dev/null || git rebase --abort
+          mkdir -p DOWNLOAD
+          cp -r "$BACKUP_DIR"/* DOWNLOAD/ 2>/dev/null || true
+          git add DOWNLOAD/README.md DOWNLOAD/README_FA.md README.md
+          if ! git diff --cached --quiet; then
+            git commit -m "[MR.MMD2019] Update master READMEs [skip ci]"
+            timeout 180 git push origin HEAD:"$BRANCH" || echo "Warning: final README push failed"
+          fi
+          echo "All files pushed successfully."
