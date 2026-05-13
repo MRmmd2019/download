@@ -23,10 +23,16 @@
 #       Added trap cleanup EXIT ERR INT TERM.
 #   FIX [BASH HIGH]:        wget --spider output on stderr not captured.
 #       Added 2>&1 redirect.
+#   FIX [BASH HIGH]:        tar.gz with password: unprotected fallback + wrong
+#       output filename. Fixed: encrypted .tar.gz.gpg, no insecure fallback.
 #   FIX [BASH MEDIUM]:      set -m in non-interactive shell is unreliable.
 #       Replaced with manual pid-array wait loop.
 #   FIX [BASH MEDIUM]:      declare -A JOB_FILES=() declared but never used.
 #       Removed dead code.
+#   FIX [BASH MEDIUM]:      7z password argument unquoted → used array to avoid
+#       word splitting.
+#   FIX [BASH MEDIUM]:      HEAD requests without -L could miss real server info
+#       due to redirects. Added -L to content-length and range probes.
 #   ADD [IMPROVEMENT]:      Disk-space guard before downloads start.
 #   ADD [IMPROVEMENT]:      Download speed / elapsed-time reporting.
 #   ADD [IMPROVEMENT]:      Deduplication: skip file if already present in DOWNLOAD/.
@@ -36,7 +42,7 @@
 
 name: DOWNLOADER-2019
 
-"on":
+on:
   workflow_dispatch:
     inputs:
 
@@ -202,7 +208,6 @@ jobs:
           ZIP_PASSWORD:   ${{ github.event.inputs.password }}
           OUTPUT_NAME:    ${{ github.event.inputs.output_name }}
           COMPRESSION_LEVEL: ${{ github.event.inputs.compression_level }}
-          TIMEOUT_MINUTES:   ${{ github.event.inputs.timeout_minutes }}
           REPO_OWNER:     ${{ github.repository_owner }}
           REPO_NAME:      ${{ github.event.repository.name }}
           BRANCH:         ${{ github.ref_name }}
@@ -254,6 +259,7 @@ jobs:
           fi
 
           # Validate timeout
+          TIMEOUT_MINUTES="${{ github.event.inputs.timeout_minutes }}"
           if ! [[ "${TIMEOUT_MINUTES}" =~ ^[0-9]+$ ]] || \
              [ "${TIMEOUT_MINUTES}" -lt 10 ] || [ "${TIMEOUT_MINUTES}" -gt 360 ]; then
             echo "⚠️  Timeout '${TIMEOUT_MINUTES}' out of range [10–360]. Using 120."
@@ -396,16 +402,14 @@ jobs:
             printf '%dm%ds' $(( dt / 60 )) $(( dt % 60 ))
           }
 
-          # ADD: HTTP status code probe
+          # ADD: HTTP status code probe (now follows redirects)
           http_status() {
-            curl -sI --max-time 15 -o /dev/null -w '%{http_code}' \
+            curl -sIL --max-time 15 -o /dev/null -w '%{http_code}' \
               -A "${PRIMARY_UA}" "$1" 2>/dev/null || echo "000"
           }
 
           # ════════════════════════════════════════════════════════════════════
           # SECTION 6 — Error report generator
-          # FIX: Heredoc content was at column-0, breaking YAML block scalars.
-          #      Now written via Python (properly indented, no YAML conflict).
           # ════════════════════════════════════════════════════════════════════
           create_error_report() {
             local FILENAME="$1" ERROR_MSG="$2" URL="$3" TOOL_LOG="$4"
@@ -684,6 +688,7 @@ jobs:
           #   FIX: cat $(ls …) unsafe → replaced with safe glob.
           #   FIX: No chunk throttle → capped at MAX_CHUNK_PARALLEL.
           #   FIX: wget --spider output goes to stderr; added 2>&1.
+          #   FIX: HEAD requests now use -L to follow redirects.
           # ════════════════════════════════════════════════════════════════════
           smart_download() {
             local URL="$1" FILENAME="$2"
@@ -692,8 +697,8 @@ jobs:
             echo "🔍 Probing file size for: $FILENAME"
             local CONTENT_LENGTH=0
 
-            # Try HEAD via curl first
-            CONTENT_LENGTH=$(curl -sI --max-time 20 \
+            # Try HEAD via curl first (follow redirects)
+            CONTENT_LENGTH=$(curl -sIL --max-time 20 \
               -A "${PRIMARY_UA}" \
               -H "Accept: */*" \
               "$URL" 2>/dev/null \
@@ -734,9 +739,9 @@ jobs:
               return $?
             fi
 
-            # ── Check Accept-Ranges ───────────────────────────────────────────
+            # ── Check Accept-Ranges (follow redirects) ─────────────────────────
             local ACCEPTS_RANGES
-            ACCEPTS_RANGES=$(curl -sI --max-time 20 \
+            ACCEPTS_RANGES=$(curl -sIL --max-time 20 \
               -A "${PRIMARY_UA}" \
               "$URL" 2>/dev/null \
               | grep -i '^accept-ranges:' \
@@ -838,6 +843,9 @@ jobs:
 
           # ════════════════════════════════════════════════════════════════════
           # SECTION 10 — Archive creation with format fallback chain
+          #   FIX: tar.gz with password now correctly creates .tar.gz.gpg and
+          #        does not fallback to unprotected archive.
+          #   FIX: 7z password argument properly quoted using array.
           # ════════════════════════════════════════════════════════════════════
           compress_file() {
             local SRC_FILE="$1"
@@ -872,20 +880,19 @@ jobs:
                   fi
                   ;;
                 7z)
-                  local p_arg=""
-                  [ -n "$PASSWORD" ] && p_arg="-p${PASSWORD}"
-                  7z a -mx="${LEVEL}" $p_arg "$OUT" "$SRC_FILE" \
+                  local p_opt=()
+                  [ -n "$PASSWORD" ] && p_opt=("-p${PASSWORD}")
+                  7z a -mx="${LEVEL}" "${p_opt[@]}" "$OUT" "$SRC_FILE" \
                     >/dev/null 2>&1 && ok=true || true
                   ;;
                 tar.gz)
                   if [ -n "$PASSWORD" ]; then
+                    # Encrypted output: .tar.gz.gpg, not plain .tar.gz
+                    OUT="${DEST_BASE}.tar.gz.gpg"
                     tar -cz -C "$(dirname "$SRC_FILE")" "$(basename "$SRC_FILE")" 2>/dev/null \
                       | gpg --batch --symmetric --cipher-algo AES256 \
                             --passphrase "$PASSWORD" --no-symkey-cache \
-                            -o "${OUT}.gpg" 2>/dev/null \
-                    && ok=true \
-                    || { tar -czf "$OUT" -C "$(dirname "$SRC_FILE")" "$(basename "$SRC_FILE")" \
-                           >/dev/null 2>&1 && ok=true || true; }
+                            -o "$OUT" 2>/dev/null && ok=true || true
                   else
                     tar -czf "$OUT" -C "$(dirname "$SRC_FILE")" "$(basename "$SRC_FILE")" \
                       >/dev/null 2>&1 && ok=true || true
@@ -926,8 +933,6 @@ jobs:
 
           # ════════════════════════════════════════════════════════════════════
           # SECTION 11 — Post-processing: normal mode
-          # FIX: write_readme used heredoc with col-0 '>' and '|' chars.
-          #      Replaced with Python-based file writer.
           # ════════════════════════════════════════════════════════════════════
           process_normal() {
             local FILE="$1"
@@ -977,8 +982,6 @@ jobs:
             local CHECKSUM; CHECKSUM=$(sha256sum "$FILE" | awk '{print $1}')
             echo "🗜 [zip] Compressing: $BASENAME ($(human_bytes $ORIG_SIZE))"
 
-            # Note: COMPRESS_RESULT_FILE and COMPRESS_USED_FORMAT are set by compress_file
-            # as global-scope variables (visible to caller since bash has lexical scope).
             COMPRESS_RESULT_FILE=""
             COMPRESS_USED_FORMAT=""
             compress_file "$FILE" \
@@ -1044,9 +1047,6 @@ jobs:
 
           # ════════════════════════════════════════════════════════════════════
           # SECTION 13 — README writers
-          # FIX: All heredoc content with '>' or '|' at column-0 broke YAML.
-          #      Now written via Python (properly indented in YAML block,
-          #      stripped by YAML parser, received correctly by shell).
           # ════════════════════════════════════════════════════════════════════
           write_readme() {
             local FOLDER="$1" FNAME="$2" SZ="$3" PARTS="$4" \
@@ -1218,10 +1218,6 @@ jobs:
 
           # ════════════════════════════════════════════════════════════════════
           # SECTION 14 — Orchestration
-          # FIX: eval "ARR=…" replaced with declare -n nameref.
-          # FIX: set -m (job control in non-interactive shell) removed.
-          # FIX: declare -A JOB_FILES removed (was dead code).
-          # ADD: Deduplication — skip if file already present in DOWNLOAD/.
           # ════════════════════════════════════════════════════════════════════
           BACKUP_DIR="/tmp/download_backup_$$"
           mkdir -p "$BACKUP_DIR"
@@ -1359,8 +1355,6 @@ jobs:
           echo "📊 Results: ${SUCCESS_FOLDERS} succeeded, ${FAILED_FOLDERS} failed"
 
           # ── Master index README (English) ────────────────────────────────────
-          # FIX: Was a heredoc with col-0 '|' and '>' chars breaking YAML.
-          #      Now written via Python.
           python3 - "DOWNLOAD/README.md" "$SUCCESS_FOLDERS" "$FAILED_FOLDERS" << 'PYEOF'
           import sys, datetime, textwrap
           path, ok, fail = sys.argv[1], sys.argv[2], sys.argv[3]
